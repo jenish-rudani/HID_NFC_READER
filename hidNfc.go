@@ -321,6 +321,29 @@ func (m *M24LRxx) ICReference() error {
 	return fmt.Errorf("ICReference: Instruction not supported")
 }
 
+func (m *M24LRxx) transmit(cmdHex string, expectedSW uint16) (string, error) {
+	cmd, err := hex.DecodeString(cmdHex)
+	if err != nil {
+		return "", fmt.Errorf("failed to decode command: %v", err)
+	}
+
+	resp, err := m.reader.Apdu(cmd)
+	if err != nil {
+		return "", fmt.Errorf("transmission failed: %v", err)
+	}
+
+	if len(resp) < 2 {
+		return "", fmt.Errorf("response too short")
+	}
+
+	sw := uint16(resp[len(resp)-2])<<8 | uint16(resp[len(resp)-1])
+	if sw != expectedSW {
+		return "", fmt.Errorf("unexpected status word: %04X", sw)
+	}
+
+	return hex.EncodeToString(resp[:len(resp)-2]), nil
+}
+
 // DittoMacs holds the MAC addresses for LoRa and BLE
 type DittoMacs struct {
 	LoRaMAC string
@@ -455,27 +478,317 @@ func (m *M24LRxx) getUID() error {
 	return nil
 }
 
-func (m *M24LRxx) transmit(cmdHex string, expectedSW uint16) (string, error) {
-	cmd, err := hex.DecodeString(cmdHex)
+// ReadDittoSettings reads all settings from an Asset+ tag
+func (m *M24LRxx) ReadDittoSettings() (*DittoSettings, error) {
+	settings := &DittoSettings{}
+
+	// Read required blocks
+	blocks := make(map[int]string)
+	for _, blockNum := range []int{7, 8, 9, 13, 14, 15, 19, 20, 21, 24, 25, 26, 27, 28, 29, 30, 31} {
+		block, err := m.ReadBlock(blockNum)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read block %d: %v", blockNum, err)
+		}
+		blocks[blockNum] = block
+	}
+
+	// Parse Block 15: 034A1504
+	settings.HardwareVersion = blocks[15][1:2]
+	fwInt, _ := strconv.ParseInt(blocks[15][2:4], 16, 0)
+	settings.FirmwareVersion = fmt.Sprintf("%.1f", float64(fwInt)/10)
+	settings.BeaconType, _ = strconv.Atoi(blocks[15][4:6])
+
+	/*
+		Block 0: 53706563
+		Block 1: 74726531
+		Block 2: 00000000
+		Block 3: 56432040
+		Block 4: 38065F39
+		Block 5: 2E361753
+		Block 6: 4502330C
+		Block 7: 01080000
+		Block 10: 00000000
+		Block 11: 0C1EF700
+		Block 12: 00000D27
+		Block 14: 000F3200
+		Block 16: FA00A60E
+		Block 17: 8E122C01
+		Block 18: E3423564
+		Block 19: A6CE00F4
+		Block 20: 00000200
+		Block 21: 05000A04
+		Block 22: 53503430
+		Block 23: 36360000
+		Block 24: C4091027
+		Block 25: A64F6D6E
+		Block 26: 692D4944
+		Block 27: 00000000
+		Block 28: 00000000
+		Block 29: 00000007
+		Block 30: 3C000002
+		Block 31: 01000000
+	*/
+
+	// Parse Block 13: 10100000
+	var err error
+	blocks[13], err = m.ReadBlock(13)
 	if err != nil {
-		return "", fmt.Errorf("failed to decode command: %v", err)
+		return nil, fmt.Errorf("failed to read block %d: %v", 13, err)
 	}
+	settings.SleepState = parseSleepState(blocks[13][2:3])
+	settings.DebugOption = parseDebugOption(blocks[13][3:4])
+	settings.MACOption = parseMACOption(blocks[13][4:5])
 
-	resp, err := m.reader.Apdu(cmd)
-	if err != nil {
-		return "", fmt.Errorf("transmission failed: %v", err)
+	// Parse Block 8: 00010000
+	settings.SpreadingFactor = parseSpreadingFactor(blocks[8][:2])
+	settings.DownlinkBitRate, _ = strconv.Atoi(blocks[8][2:4])
+	settings.UplinkBitRate, _ = strconv.Atoi(blocks[8][4:6])
+	tempHigh, _ := strconv.ParseInt(blocks[8][6:], 16, 0)
+	settings.HighTemperature = int(tempHigh) - 127
+
+	// Parse Block 9: 00050000
+	tempLow, _ := strconv.ParseInt(blocks[9][:2], 16, 0)
+	settings.LowTemperature = int(tempLow) - 127
+	settings.Accelerometer, _ = strconv.Atoi(blocks[9][2:4])
+
+	// Parse Block 14
+	settings.GNSSMin, _ = strconv.Atoi(blocks[14][:2])
+	settings.GNSSMax, _ = strconv.Atoi(blocks[14][2:4])
+	dop, _ := strconv.ParseFloat(blocks[14][4:6], 64)
+	settings.DOP = dop / 10
+	settings.OperationalMode, _ = strconv.Atoi(blocks[14][6:])
+
+	// Parse Block 7
+	settings.LoRaEnable = parseLoRaEnable(blocks[7][:2])
+	settings.LoRaRegion = parseLoRaRegion(blocks[7][2:4])
+
+	// Parse Block 19
+	settings.ABR2, _ = strconv.Atoi(blocks[19][4:6])
+	settings.BLEGain = parseBLEGain(blocks[19][6:])
+
+	// Parse Block 20
+	motionMoved, _ := strconv.ParseInt(blocks[20][4:]+blocks[20][6:], 16, 0)
+	settings.MotionMoved = int(motionMoved)
+
+	// Parse Block 21
+	motionStationary, _ := strconv.ParseInt(blocks[21][:2]+blocks[21][2:4], 16, 0)
+	settings.MotionStationary = int(motionStationary)
+	settings.MotionAccelActivity, _ = strconv.Atoi(blocks[21][4:6])
+	settings.MotionAccelActivityThreshold, _ = strconv.Atoi(blocks[21][6:])
+
+	// Parse Blocks 24-29
+	settings.BLEAdvertisingInterval, _ = strconv.ParseInt(blocks[24][:4], 16, 0)
+	settings.BLERefScanInterval, _ = strconv.ParseInt(blocks[24][4:], 16, 0)
+	settings.BLERefRSSI = complementToDec(blocks[25][:2])
+	settings.BLERefFilter = parseRefFilter(blocks[25][2:] + blocks[26] + blocks[27] + blocks[28] + blocks[29][:2])
+	settings.BLEAdvertisingType = parseBLEAdvertisingType(blocks[29][2:4])
+	settings.PressUplink = parsePressUplink(blocks[29][4:6])
+	settings.PingSlotPeriod = parsePingSlotPeriod(blocks[29][6:])
+
+	// Parse Block 30
+	settings.Timeout, _ = strconv.Atoi(blocks[30][:2])
+
+	// Parse Flags
+	flags1, _ := strconv.ParseUint(blocks[30][6:], 16, 8)
+	flags2, _ := strconv.ParseUint(blocks[31][:2], 16, 8)
+	settings.BLERefMode = parseBLERefMode(flags1)
+	settings.ClassSelect = parseClassSelect(flags1)
+	settings.ConfirmedUplinks = parseConfirmedUplinks(flags2)
+	settings.Hopping = parseHopping(flags2)
+
+	return settings, nil
+}
+
+type DittoSettings struct {
+	BeaconType                   int
+	HardwareVersion              string
+	FirmwareVersion              string
+	SleepState                   string
+	DebugOption                  string
+	MACOption                    string
+	SpreadingFactor              string
+	DownlinkBitRate              int
+	UplinkBitRate                int
+	HighTemperature              int
+	LowTemperature               int
+	Accelerometer                int
+	GNSSMin                      int
+	GNSSMax                      int
+	DOP                          float64
+	OperationalMode              int
+	LoRaEnable                   string
+	LoRaRegion                   string
+	ABR2                         int
+	BLEGain                      string
+	MotionMoved                  int
+	MotionStationary             int
+	MotionAccelActivity          int
+	MotionAccelActivityThreshold int
+	BLEAdvertisingInterval       int64
+	BLERefScanInterval           int64
+	BLERefRSSI                   int
+	BLERefFilter                 string
+	BLEAdvertisingType           string
+	PressUplink                  string
+	PingSlotPeriod               string
+	Timeout                      int
+	BLERefMode                   string
+	ClassSelect                  string
+	ConfirmedUplinks             string
+	Hopping                      string
+}
+
+func parseSleepState(state string) string {
+	switch state {
+	case "0":
+		return "Asleep"
+	case "1":
+		return "Awake"
+	default:
+		return "Unknown"
 	}
+}
 
-	if len(resp) < 2 {
-		return "", fmt.Errorf("response too short")
+func parseDebugOption(option string) string {
+	switch option {
+	case "0":
+		return "Tones Disabled"
+	case "1":
+		return "Tones Enabled"
+	default:
+		return "Unknown"
 	}
+}
 
-	sw := uint16(resp[len(resp)-2])<<8 | uint16(resp[len(resp)-1])
-	if sw != expectedSW {
-		return "", fmt.Errorf("unexpected status word: %04X", sw)
+func parseMACOption(option string) string {
+	switch option {
+	case "0":
+		return "LoRa Module"
+	case "1":
+		return "LoRa DevEUI"
+	default:
+		return "Unknown"
 	}
+}
 
-	return hex.EncodeToString(resp[:len(resp)-2]), nil
+func parseSpreadingFactor(sf string) string {
+	sfInt, _ := strconv.ParseInt(sf, 16, 0)
+	if sfInt == 255 {
+		return "ADR"
+	}
+	return fmt.Sprintf("%d", sfInt)
+}
+
+func parseLoRaEnable(enable string) string {
+	enableInt, _ := strconv.Atoi(enable)
+	if enableInt == 1 {
+		return "Enabled"
+	}
+	return "Disabled"
+}
+
+func parseLoRaRegion(region string) string {
+	regionInt, _ := strconv.Atoi(region)
+	regions := map[int]string{
+		0: "AS 923MHz_GRP1", 1: "AU 915MHz", 5: "EU 868MHz",
+		6: "SK 930MHz", 7: "IN 865MHz", 8: "US 915MHz",
+		10: "AS923_GRP2", 11: "AS923_GRP3",
+	}
+	if r, ok := regions[regionInt]; ok {
+		return r
+	}
+	return "Not Selected"
+}
+
+func parseBLEGain(gain string) string {
+	gains := map[string]string{
+		"D8": "-40dBm", "EC": "-20dBm", "F0": "-16dBm",
+		"F4": "-12dBm", "F8": "-8dBm", "FC": "-4dBm",
+		"00": "0dBm", "03": "3dBm", "04": "4dBm",
+	}
+	if g, ok := gains[gain]; ok {
+		return g
+	}
+	return "Unknown"
+}
+
+func parseRefFilter(filter string) string {
+	decoded := ""
+	for i := 0; i < len(filter); i += 2 {
+		b, _ := strconv.ParseInt(filter[i:i+2], 16, 0)
+		decoded += string(rune(b))
+	}
+	return decoded
+}
+
+func parseBLEAdvertisingType(adType string) string {
+	if adType == "01" {
+		return "sBeacon"
+	}
+	return "Default"
+}
+
+func parsePressUplink(uplink string) string {
+	if uplink == "01" {
+		return "Disabled"
+	}
+	return "Enabled"
+}
+
+func parsePingSlotPeriod(period string) string {
+	periodInt, _ := strconv.Atoi(period)
+	periods := map[int]string{
+		0: "1S", 1: "2S", 2: "4S", 3: "8S",
+		4: "16S", 5: "32S", 6: "64S", 7: "128S",
+	}
+	if p, ok := periods[periodInt]; ok {
+		return p
+	}
+	return "Unknown"
+}
+
+func parseBLERefMode(flags uint64) string {
+	switch flags & 0b11 {
+	case 0b10:
+		return "Reference Tags"
+	case 0b01:
+		return "BluFi"
+	default:
+		return "Disabled"
+	}
+}
+
+func parseClassSelect(flags uint64) string {
+	switch (flags >> 4) & 0b11 {
+	case 0b10:
+		return "Class B"
+	case 0b01:
+		return "Class C"
+	default:
+		return "Class A"
+	}
+}
+
+func parseConfirmedUplinks(flags uint64) string {
+	if flags&0b1 == 0b1 {
+		return "Enabled"
+	}
+	return "Disabled"
+}
+
+func parseHopping(flags uint64) string {
+	if (flags>>4)&0b1 == 0b1 {
+		return "Enabled"
+	}
+	return "Disabled"
+}
+
+func complementToDec(hex string) int {
+	i, _ := strconv.ParseInt(hex, 16, 0)
+	if i > 127 {
+		return int(i - 256)
+	}
+	return int(i)
 }
 
 func main() {
@@ -572,5 +885,126 @@ func main() {
 	} else {
 		printLoRaSettings(loraSettings)
 	}
+	printStructuredOutput(m24lr)
 
+	settings, err := m24lr.ReadDittoSettings()
+	if err != nil {
+		fmt.Printf("Failed to read Ditto settings: %v\n", err)
+	} else {
+		PrintMappedDittoSettings(settings)
+	}
+}
+
+const (
+	colorReset  = "\033[0m"
+	colorRed    = "\033[31m"
+	colorGreen  = "\033[32m"
+	colorYellow = "\033[33m"
+	colorBlue   = "\033[34m"
+	colorPurple = "\033[35m"
+	colorCyan   = "\033[36m"
+	colorWhite  = "\033[37m"
+)
+
+func printStructuredOutput(m24lr *M24LRxx) {
+	fmt.Println(colorGreen + "=== RFID Tag Reader Output ===" + colorReset)
+
+	printSection("Basic Information", func() {
+		printField("UID", m24lr.UID())
+	})
+
+	printSection("Beacon Information", func() {
+		beaconInfo, _ := m24lr.ReadSKU()
+		printField("Type", beaconInfo.BeaconType)
+		printField("Name", beaconInfo.Name)
+		printField("Image", beaconInfo.Image)
+	})
+
+	printSection("Ditto MACs", func() {
+		macs, _ := m24lr.ReadDittoMacs()
+		printField("LoRa MAC", strings.ToUpper(macs.LoRaMAC))
+		printField("BLE MAC", strings.ToUpper(macs.BleMac))
+		if macs.BleMac != "00:00:00:00:00:00" {
+			fmt.Println(colorGreen + "Mac Written" + colorReset)
+		} else {
+			fmt.Println(colorRed + "Warning: Mac Not written, Erase tag and repeat" + colorReset)
+		}
+	})
+
+	printSection("Local BLE Name", func() {
+		localName, _ := m24lr.ReadLocalName()
+		printField("Name", localName)
+	})
+
+	printSection("LoRa Settings", func() {
+		settings, _ := m24lr.ReadLoRaSettings(3) // Assuming tag type 3 (Sense Range)
+		printField("Beacon Type", fmt.Sprintf("%d", settings.BeaconType))
+		printField("Hardware Version", settings.HardwareVersion)
+		printField("Firmware Version", settings.FirmwareVersion)
+		printField("Sleep State", settings.SleepState)
+		printField("Min/Max Threshold", settings.MinMaxThreshold)
+		printField("Range Type", settings.RangeType)
+		printField("Spreading Factor", settings.SpreadingFactor)
+		printField("Downlink Bit Rate", fmt.Sprintf("%d", settings.DownlinkBitRate))
+		printField("Uplink Bit Rate", fmt.Sprintf("%d", settings.UplinkBitRate))
+		printField("High Temperature", fmt.Sprintf("%d°C", settings.HighTemperature))
+		printField("Low Temperature", fmt.Sprintf("%d°C", settings.LowTemperature))
+		printField("Accelerometer", fmt.Sprintf("%d", settings.Accelerometer))
+		printField("GNSS Min", fmt.Sprintf("%d", settings.GNSSMin))
+		printField("GNSS Max", fmt.Sprintf("%d", settings.GNSSMax))
+		printField("DOP", fmt.Sprintf("%.1f", settings.DOP))
+		printField("Range Threshold", fmt.Sprintf("%d", settings.RangeThreshold))
+		printField("Sensor Period", fmt.Sprintf("%d", settings.SensorPeriod))
+		printField("Range Offset", fmt.Sprintf("%d", settings.RangeOffset))
+		printField("Maximum Range", fmt.Sprintf("%d m", settings.MaximumRange))
+	})
+}
+
+func printSection(title string, content func()) {
+	fmt.Printf("\n%s=== %s ===%s\n", colorCyan, title, colorReset)
+	content()
+}
+
+func printField(label, value string) {
+	fmt.Printf("%s%s:%s %s\n", colorYellow, label, colorReset, value)
+}
+
+func PrintMappedDittoSettings(settings *DittoSettings) {
+	fmt.Println()
+	fmt.Println(colorGreen + "=== Asset+ Tag Settings ===" + colorReset)
+
+	printMappedField("Hardware Version", settings.HardwareVersion)
+	printMappedField("Firmware Version", settings.FirmwareVersion)
+	printMappedField("Beacon Type", strconv.Itoa(settings.BeaconType))
+	printMappedField("Debug Tones", settings.DebugOption)
+	printMappedField("BLE TX PWR", settings.BLEGain)
+	printMappedField("LoRa Region", settings.LoRaRegion)
+	printMappedField("Stationary -> Moved Threshold", fmt.Sprintf("%d", settings.MotionMoved))
+	printMappedField("Moved ->Stationary Threshold", fmt.Sprintf("%d", settings.MotionStationary))
+	printMappedField("Activity Window", fmt.Sprintf("%d", settings.MotionAccelActivity))
+	printMappedField("Activity Threshold", fmt.Sprintf("%d", settings.MotionAccelActivityThreshold))
+	printMappedField("Motion Threshold", fmt.Sprintf("%d", settings.Accelerometer))
+	printMappedField("HBR in Hours", fmt.Sprintf("%d", settings.DownlinkBitRate)) // Assuming HBR is stored in DownlinkBitRate
+	printMappedField("ABR in minutes", fmt.Sprintf("%d", settings.ABR2))
+	printMappedField("Tag Status", settings.SleepState)
+	printMappedField("GNSS Max Lock Time in Minutes", fmt.Sprintf("%d", settings.GNSSMax))
+	printMappedField("DOP Threshold", fmt.Sprintf("%.1f", settings.DOP))
+	printMappedField("Post Movement/DR", "0") // Not clear where this is stored, using a default value
+	printMappedField("LoRa Enable", settings.LoRaEnable)
+	printMappedField("Button Press Uplink", settings.PressUplink)
+	printMappedField("BLE Advertising Type", settings.BLEAdvertisingType)
+	printMappedField("BLE Advertising rate in mS", fmt.Sprintf("%d", settings.BLEAdvertisingInterval))
+	printMappedField("Position Engine BLE Scan", settings.BLERefMode)
+	printMappedField("Position Engine BLE Scan duration in mS", fmt.Sprintf("%d", settings.BLERefScanInterval))
+	printMappedField("BLE Reference Tag Filter ID", settings.BLERefFilter)
+	printMappedField("BLE Scan RSSI Threshold", fmt.Sprintf("%d", settings.BLERefRSSI))
+	printMappedField("LoRaWAN Class B Ping Slot", settings.PingSlotPeriod)
+	printMappedField("LoRaWAN Class B Timeout", fmt.Sprintf("%d", settings.Timeout))
+	printMappedField("LoRaWAN Class select", settings.ClassSelect)
+	printMappedField("LoRaWAN Confirmed Uplinks", settings.ConfirmedUplinks)
+	printMappedField("LoRaWAN Sub-band Hopping", settings.Hopping)
+}
+
+func printMappedField(label, value string) {
+	fmt.Printf("%s%s:%s %s\n", colorYellow, label, colorReset, value)
 }
