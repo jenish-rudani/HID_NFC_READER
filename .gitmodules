@@ -1,0 +1,6 @@
+[submodule "pcsc/scard"]
+	path = pcsc/scard
+	url = https://github.com/ebfe/scard.git
+[submodule "pcsc/smartcard"]
+	path = pcsc/smartcard
+	url = https://github.com/dumacp/smartcard.git
