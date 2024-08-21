@@ -499,42 +499,37 @@ func (m *M24LRxx) ReadDittoSettings() (*DittoSettings, error) {
 	settings.BeaconType, _ = strconv.Atoi(blocks[15][4:6])
 
 	/*
-		Block 0: 53706563
-		Block 1: 74726531
-		Block 2: 00000000
-		Block 3: 56432040
-		Block 4: 38065F39
-		Block 5: 2E361753
-		Block 6: 4502330C
-		Block 7: 01080000
-		Block 10: 00000000
-		Block 11: 0C1EF700
-		Block 12: 00000D27
-		Block 14: 000F3200
-		Block 16: FA00A60E
-		Block 17: 8E122C01
-		Block 18: E3423564
-		Block 19: A6CE00F4
-		Block 20: 00000200
-		Block 21: 05000A04
-		Block 22: 53503430
-		Block 23: 36360000
-		Block 24: C4091027
-		Block 25: A64F6D6E
-		Block 26: 692D4944
-		Block 27: 00000000
-		Block 28: 00000000
-		Block 29: 00000007
-		Block 30: 3C000002
-		Block 31: 01000000
+	   Block 0: 53706563
+	   Block 1: 74726531
+	   Block 2: 00000000
+	   Block 3: 56432040
+	   Block 4: 38065F39
+	   Block 5: 2E361753
+	   Block 6: 4502330C
+	   Block 7: 01080000
+	   Block 10: 00000000
+	   Block 11: 0C1EF700
+	   Block 12: 00000D27
+	   Block 14: 000F3200
+	   Block 16: FA00A60E
+	   Block 17: 8E122C01
+	   Block 18: E3423564
+	   Block 19: A6CE00F4
+	   Block 20: 00000200
+	   Block 21: 05000A04
+	   Block 22: 53503430
+	   Block 23: 36360000
+	   Block 24: C4091027
+	   Block 25: A64F6D6E
+	   Block 26: 692D4944
+	   Block 27: 00000000
+	   Block 28: 00000000
+	   Block 29: 00000007
+	   Block 30: 3C000002
+	   Block 31: 01000000
 	*/
 
 	// Parse Block 13: 10100000
-	var err error
-	blocks[13], err = m.ReadBlock(13)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read block %d: %v", 13, err)
-	}
 	settings.SleepState = parseSleepState(blocks[13][2:3])
 	settings.DebugOption = parseDebugOption(blocks[13][3:4])
 	settings.MACOption = parseMACOption(blocks[13][4:5])
@@ -551,50 +546,74 @@ func (m *M24LRxx) ReadDittoSettings() (*DittoSettings, error) {
 	settings.LowTemperature = int(tempLow) - 127
 	settings.Accelerometer, _ = strconv.Atoi(blocks[9][2:4])
 
-	// Parse Block 14
-	settings.GNSSMin, _ = strconv.Atoi(blocks[14][:2])
-	settings.GNSSMax, _ = strconv.Atoi(blocks[14][2:4])
-	dop, _ := strconv.ParseFloat(blocks[14][4:6], 64)
-	settings.DOP = dop / 10
-	settings.OperationalMode, _ = strconv.Atoi(blocks[14][6:])
+	// Parse Block 14: 000F3200
+	// Parse Block 14: 000F3200
+	settings.GNSSMin, _ = strconv.ParseInt(blocks[14][:2], 16, 64)
+	settings.GNSSMax, _ = strconv.ParseInt(blocks[14][2:4], 16, 64)
+	dop, _ := strconv.ParseInt(blocks[14][4:6], 16, 64)
+	settings.DOP = float64(dop / 10)
+	settings.OperationalMode, _ = strconv.ParseInt(blocks[14][6:], 16, 64)
 
-	// Parse Block 7
+	// Parse Block 7: 01080000
 	settings.LoRaEnable = parseLoRaEnable(blocks[7][:2])
 	settings.LoRaRegion = parseLoRaRegion(blocks[7][2:4])
 
-	// Parse Block 19
+	// Parse Block 19: A6CE00F4
 	settings.ABR2, _ = strconv.Atoi(blocks[19][4:6])
 	settings.BLEGain = parseBLEGain(blocks[19][6:])
 
-	// Parse Block 20
-	motionMoved, _ := strconv.ParseInt(blocks[20][4:]+blocks[20][6:], 16, 0)
+	// Parse Block 20: 00000200
+	motionMovedHex := fmt.Sprintf("%04s", blocks[20][4:])            // This is equivalent to Substring(4, 4).PadLeft(4, "0")
+	motionMovedRearranged := motionMovedHex[2:] + motionMovedHex[:2] // Rearrange the string
+	motionMoved, _ := strconv.ParseInt(motionMovedRearranged, 16, 64)
 	settings.MotionMoved = int(motionMoved)
 
-	// Parse Block 21
-	motionStationary, _ := strconv.ParseInt(blocks[21][:2]+blocks[21][2:4], 16, 0)
+	// Parse Block 21: 05000A04
+	motionStationaryHex := fmt.Sprintf("%04s", blocks[21][:4]) // This pads the string to 4 characters if needed
+	motionStationaryRearranged := motionStationaryHex[2:] + motionStationaryHex[:2]
+	motionStationary, _ := strconv.ParseInt(motionStationaryRearranged, 16, 64)
 	settings.MotionStationary = int(motionStationary)
-	settings.MotionAccelActivity, _ = strconv.Atoi(blocks[21][4:6])
-	settings.MotionAccelActivityThreshold, _ = strconv.Atoi(blocks[21][6:])
+	settings.MotionAccelActivity, _ = strconv.ParseInt(blocks[21][4:6], 16, 64)
+	settings.MotionAccelActivityThreshold, _ = strconv.ParseInt(blocks[21][6:], 16, 64)
 
-	// Parse Blocks 24-29
-	settings.BLEAdvertisingInterval, _ = strconv.ParseInt(blocks[24][:4], 16, 0)
-	settings.BLERefScanInterval, _ = strconv.ParseInt(blocks[24][4:], 16, 0)
+	// Parse Blocks 24-29: C4091027, A64F6D6E, 692D4944, 00000000, 00000000, 00000007
+	BleAdvRateHex := fmt.Sprintf("%04s", blocks[24][:4])
+	BleAdvRateHexRearranged := BleAdvRateHex[2:] + BleAdvRateHex[:2]
+	settings.BLEAdvertisingInterval, _ = strconv.ParseInt(BleAdvRateHexRearranged, 16, 64)
+
+	BleRfScanIntervalHex := fmt.Sprintf("%04s", blocks[24][4:])
+	BleRfScanInterValRearranged := BleRfScanIntervalHex[2:] + BleRfScanIntervalHex[:2]
+	settings.BLERefScanInterval, _ = strconv.ParseInt(BleRfScanInterValRearranged, 16, 64)
 	settings.BLERefRSSI = complementToDec(blocks[25][:2])
 	settings.BLERefFilter = parseRefFilter(blocks[25][2:] + blocks[26] + blocks[27] + blocks[28] + blocks[29][:2])
 	settings.BLEAdvertisingType = parseBLEAdvertisingType(blocks[29][2:4])
 	settings.PressUplink = parsePressUplink(blocks[29][4:6])
 	settings.PingSlotPeriod = parsePingSlotPeriod(blocks[29][6:])
 
-	// Parse Block 30
-	settings.Timeout, _ = strconv.Atoi(blocks[30][:2])
+	// Parse Block 30: 3C000002
+	settings.Timeout, _ = strconv.ParseInt(blocks[30][:2], 16, 8)
 
-	// Parse Flags
+	// Parse Flags from Block 30 and 31
 	flags1, _ := strconv.ParseUint(blocks[30][6:], 16, 8)
 	flags2, _ := strconv.ParseUint(blocks[31][:2], 16, 8)
-	settings.BLERefMode = parseBLERefMode(flags1)
-	settings.ClassSelect = parseClassSelect(flags1)
-	settings.ConfirmedUplinks = parseConfirmedUplinks(flags2)
-	settings.Hopping = parseHopping(flags2)
+	flags1Bin := fmt.Sprintf("%08b", flags1) // Convert to 8-bit binary string
+	flags2Bin := fmt.Sprintf("%08b", flags2) // Convert to 8-bit binary string
+
+	// Reverse the bits
+	var reversedFlags1Bin string
+	var reversedFlags2Bin string
+	for i := len(flags1Bin) - 1; i >= 0; i-- {
+		reversedFlags1Bin += string(flags1Bin[i])
+	}
+	for i := len(flags2Bin) - 1; i >= 0; i-- {
+		reversedFlags2Bin += string(flags2Bin[i])
+	}
+
+	settings.BLERefMode = parseBLERefMode(reversedFlags1Bin[:2])
+
+	settings.ClassSelect = parseClassSelect(reversedFlags1Bin[4:6])
+	settings.ConfirmedUplinks = parseConfirmedUplinks(reversedFlags2Bin[:1])
+	settings.Hopping = parseHopping(reversedFlags2Bin[4:5])
 
 	return settings, nil
 }
@@ -612,18 +631,18 @@ type DittoSettings struct {
 	HighTemperature              int
 	LowTemperature               int
 	Accelerometer                int
-	GNSSMin                      int
-	GNSSMax                      int
+	GNSSMin                      int64
+	GNSSMax                      int64
 	DOP                          float64
-	OperationalMode              int
+	OperationalMode              int64
 	LoRaEnable                   string
 	LoRaRegion                   string
 	ABR2                         int
 	BLEGain                      string
 	MotionMoved                  int
 	MotionStationary             int
-	MotionAccelActivity          int
-	MotionAccelActivityThreshold int
+	MotionAccelActivity          int64
+	MotionAccelActivityThreshold int64
 	BLEAdvertisingInterval       int64
 	BLERefScanInterval           int64
 	BLERefRSSI                   int
@@ -631,7 +650,7 @@ type DittoSettings struct {
 	BLEAdvertisingType           string
 	PressUplink                  string
 	PingSlotPeriod               string
-	Timeout                      int
+	Timeout                      int64
 	BLERefMode                   string
 	ClassSelect                  string
 	ConfirmedUplinks             string
@@ -738,8 +757,8 @@ func parsePressUplink(uplink string) string {
 func parsePingSlotPeriod(period string) string {
 	periodInt, _ := strconv.Atoi(period)
 	periods := map[int]string{
-		0: "1S", 1: "2S", 2: "4S", 3: "8S",
-		4: "16S", 5: "32S", 6: "64S", 7: "128S",
+		0: "1 s", 1: "2 s", 2: "4 s", 3: "8 s",
+		4: "16 s", 5: "32 s", 6: "64 s", 7: "128 s",
 	}
 	if p, ok := periods[periodInt]; ok {
 		return p
@@ -747,40 +766,52 @@ func parsePingSlotPeriod(period string) string {
 	return "Unknown"
 }
 
-func parseBLERefMode(flags uint64) string {
-	switch flags & 0b11 {
-	case 0b10:
+func parseBLERefMode(flags string) string {
+	switch flags {
+	case "10":
 		return "Reference Tags"
-	case 0b01:
+	case "01":
 		return "BluFi"
-	default:
+	case "00":
 		return "Disabled"
+	default:
+		return "Unknown"
 	}
 }
 
-func parseClassSelect(flags uint64) string {
-	switch (flags >> 4) & 0b11 {
-	case 0b10:
+func parseClassSelect(flags string) string {
+	switch flags {
+	case "00":
+		return "Class A"
+	case "10":
 		return "Class B"
-	case 0b01:
+	case "01":
 		return "Class C"
 	default:
-		return "Class A"
+		return "Unknown"
 	}
 }
 
-func parseConfirmedUplinks(flags uint64) string {
-	if flags&0b1 == 0b1 {
+func parseConfirmedUplinks(flags string) string {
+	switch flags {
+	case "0":
+		return "Disabled"
+	case "1":
 		return "Enabled"
+	default:
+		return "Unknown"
 	}
-	return "Disabled"
 }
 
-func parseHopping(flags uint64) string {
-	if (flags>>4)&0b1 == 0b1 {
+func parseHopping(flags string) string {
+	switch flags {
+	case "0":
+		return "Disabled"
+	case "1":
 		return "Enabled"
+	default:
+		return "Unknown"
 	}
-	return "Disabled"
 }
 
 func complementToDec(hex string) int {
