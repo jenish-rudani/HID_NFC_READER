@@ -12,10 +12,10 @@ import (
 	"bitbucket.org/bluvision/pcsc/pcsc"
 )
 
-// CardReader represents a M24LR series RFID tag
-type CardReader struct {
+// NfcCard represents a M24LR series RFID tag
+type NfcCard struct {
 	uid    string
-	reader pcsc.Card
+	Reader pcsc.Card
 }
 
 // BeaconType represents the type of beacon
@@ -61,7 +61,7 @@ type LoRaSettings struct {
 }
 
 // ReadLoRaSettings reads all LoRa settings from the RFID tag
-func (m *CardReader) ReadLoRaSettings(tagType int) (*LoRaSettings, error) {
+func (m *NfcCard) ReadLoRaSettings(tagType int) (*LoRaSettings, error) {
 	settings := &LoRaSettings{}
 
 	blocks := make(map[int]string)
@@ -165,8 +165,66 @@ type BeaconInfo struct {
 	Image      string // In Go, we'll just store the image name/path
 }
 
+// APDUInfo holds the parsed information from an APDU response
+type APDUInfo struct {
+	Tag         byte
+	Value       string
+	ValueRaw    []byte
+	StatusWords [2]byte
+}
+
+func ParseAPDU(apdu []uint8) (APDUInfo, error) {
+	info := APDUInfo{}
+
+	if len(apdu) < 5 {
+		return info, fmt.Errorf("APDU too short")
+	}
+
+	// Extract status words (last two bytes)
+	info.StatusWords = [2]byte{apdu[len(apdu)-2], apdu[len(apdu)-1]}
+
+	// Check for successful processing (SW1SW2 = 9000)
+	if info.StatusWords != [2]byte{0x90, 0x00} {
+		return info, fmt.Errorf("unsuccessful processing: SW1SW2 = %02X%02X", info.StatusWords[0], info.StatusWords[1])
+	}
+
+	// Check for the response tag (BD or 9D)
+	if apdu[0] != 0xBD && apdu[0] != 0x9D {
+		return info, fmt.Errorf("unexpected response tag: %02X", apdu[0])
+	}
+
+	// Extract the inner TLV
+	innerLength := int(apdu[1])
+	if len(apdu) < innerLength+2 {
+		return info, fmt.Errorf("APDU length mismatch")
+	}
+
+	info.Tag = apdu[2]
+	valueLength := int(apdu[3])
+	valueEnd := 4 + valueLength
+
+	if valueEnd > len(apdu)-2 {
+		return info, fmt.Errorf("invalid value length")
+	}
+
+	// Extract the value based on the tag
+	switch info.Tag {
+	case 0x02, 0x92: // Product name or Serial number
+		info.Value = string(apdu[4:valueEnd])
+		info.ValueRaw = apdu[4:valueEnd]
+		// Remove null terminator if present
+		info.Value = strings.TrimRight(info.Value, "\x00")
+	default:
+		// For other tags, just store the hex representation
+		info.Value = fmt.Sprintf("%X", apdu[4:valueEnd])
+		info.ValueRaw = apdu[4:valueEnd]
+	}
+
+	return info, nil
+}
+
 // ReadSKU reads the SKU (beacon type) from the tag
-func (m *CardReader) ReadSKU() (*BeaconInfo, error) {
+func (m *NfcCard) ReadSKU() (*BeaconInfo, error) {
 	block, err := m.ReadBlock(15)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read block 15: %v", err)
@@ -228,8 +286,32 @@ func printBeaconInfo(info *BeaconInfo) {
 	log.Infof("Image: %s\n", info.Image)
 }
 
+func (m *NfcCard) EraseTag() error {
+	log.Info("Starting NFC tag erasure...")
+
+	// Write zeros to blocks 0-48
+	zeroBlock := "00000000" // 4 bytes of zeros in hex
+
+	for block := 0; block <= 48; block++ {
+		log.Infof("Erasing block %d...", block)
+		_, err := m.WriteBlock(block, zeroBlock)
+		if err != nil {
+			return fmt.Errorf("failed to erase block %d: %v", block, err)
+		}
+	}
+
+	// Calculate and write CRC for the zeroed configuration
+	err := m.CalculateAndWriteCRC()
+	if err != nil {
+		return fmt.Errorf("failed to write CRC after erasure: %v", err)
+	}
+
+	log.Info("NFC tag erasure completed successfully")
+	return nil
+}
+
 // ReadUUID reads the UUID and related information based on the beacon type
-func (m *CardReader) ReadUUID(beaconType uint64) (*UUIDInfo, error) {
+func (m *NfcCard) ReadUUID(beaconType uint64) (*UUIDInfo, error) {
 	blocks := make([]string, 6)
 	var err error
 
@@ -259,16 +341,16 @@ func (m *CardReader) ReadUUID(beaconType uint64) (*UUIDInfo, error) {
 	return info, nil
 }
 
-// NewCardReader creates a new CardReader instance
-func NewCardReader(reader pcsc.Reader) (*CardReader, error) {
+// NewCardReader creates a new NfcCard instance
+func NewCardReader(reader pcsc.Reader) (*NfcCard, error) {
 
 	card, err := reader.ConnectCardPCSC()
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to card: %v", err)
 	}
 
-	m24lr := &CardReader{
-		reader: card,
+	m24lr := &NfcCard{
+		Reader: card,
 	}
 
 	err = m24lr.getUID()
@@ -281,34 +363,34 @@ func NewCardReader(reader pcsc.Reader) (*CardReader, error) {
 }
 
 // UID returns the UID of the tag
-func (m *CardReader) UID() string {
+func (m *NfcCard) UID() string {
 	return m.uid
 }
 
 // ReadBlock reads a block from the tag
-func (m *CardReader) ReadBlock(blockNumber int) (string, error) {
+func (m *NfcCard) ReadBlock(blockNumber int) (string, error) {
 	cmd := fmt.Sprintf("FFB0%04X04", blockNumber)
 	return m.transmit(cmd, 0x9000)
 }
 
 // WriteBlock writes a block to the tag
-func (m *CardReader) WriteBlock(blockNumber int, block string) (string, error) {
+func (m *NfcCard) WriteBlock(blockNumber int, block string) (string, error) {
 	cmd := fmt.Sprintf("FFD6%04X04%s", blockNumber, block)
 	return m.transmit(cmd, 0x9000)
 }
 
 // AFI returns the Application Family Identifier
-func (m *CardReader) AFI() (string, error) {
+func (m *NfcCard) AFI() (string, error) {
 	return m.transmit("FF30020001", 0x9000)
 }
 
 // DSFID returns the Data Storage Format Identifier
-func (m *CardReader) DSFID() (string, error) {
+func (m *NfcCard) DSFID() (string, error) {
 	return m.transmit("FF30030001", 0x9000)
 }
 
 // MemorySize returns the memory size of the tag
-func (m *CardReader) MemorySize() (uint16, error) {
+func (m *NfcCard) MemorySize() (uint16, error) {
 	response, err := m.transmit("FF30040003", 0x9000)
 	if err != nil {
 		return 0, err
@@ -321,17 +403,17 @@ func (m *CardReader) MemorySize() (uint16, error) {
 }
 
 // ICReference is not supported
-func (m *CardReader) ICReference() error {
+func (m *NfcCard) ICReference() error {
 	return fmt.Errorf("ICReference: Instruction not supported")
 }
 
-func (m *CardReader) transmit(cmdHex string, expectedSW uint16) (string, error) {
+func (m *NfcCard) transmit(cmdHex string, expectedSW uint16) (string, error) {
 	cmd, err := hex.DecodeString(cmdHex)
 	if err != nil {
 		return "", fmt.Errorf("failed to decode command: %v", err)
 	}
 
-	resp, err := m.reader.Apdu(cmd)
+	resp, err := m.Reader.Apdu(cmd)
 	if err != nil {
 		return "", fmt.Errorf("transmission failed: %v", err)
 	}
@@ -348,65 +430,30 @@ func (m *CardReader) transmit(cmdHex string, expectedSW uint16) (string, error) 
 	return hex.EncodeToString(resp[:len(resp)-2]), nil
 }
 
-// DittoMacs holds the MAC addresses for LoRa and BLE
-type DittoMacs struct {
-	LoRaMAC string
-	BleMac  string
-}
-
-// ReadDittoMacs reads the LoRa and BLE MAC addresses from the tag
-func (m *CardReader) ReadDittoMacs() (*DittoMacs, error) {
-	macs := &DittoMacs{}
-
-	// Read LoRa MAC
-	loraDword1, err := m.ReadBlock(11)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read LoRa block 11: %v", err)
-	}
-	loraDword2, err := m.ReadBlock(12)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read LoRa block 12: %v", err)
-	}
-
-	loraMacParts := []string{
-		loraDword1[0:2], loraDword1[2:4], loraDword1[4:6], loraDword1[6:8],
-		loraDword2[0:2], loraDword2[2:4], loraDword2[4:6], loraDword2[6:8],
-	}
-	macs.LoRaMAC = strings.Join(loraMacParts, ":")
+// ReadBleMac reads the LoRa and BLE MAC addresses from the tag
+func (m *NfcCard) ReadBleMac() (string, error) {
 
 	// Read BLE MAC
 	bleDword1, err := m.ReadBlock(18)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read BLE block 18: %v", err)
+		return "", fmt.Errorf("failed to read BLE block 18: %v", err)
 	}
 	bleDword2, err := m.ReadBlock(19)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read BLE block 19: %v", err)
+		return "", fmt.Errorf("failed to read BLE block 19: %v", err)
 	}
 
 	BLEMacParts := []string{
 		bleDword2[2:4], bleDword2[0:2],
 		bleDword1[6:8], bleDword1[4:6], bleDword1[2:4], bleDword1[0:2],
 	}
-	macs.BleMac = strings.Join(BLEMacParts, ":")
+	BleMac := strings.Join(BLEMacParts, ":")
 
-	return macs, nil
-}
-
-func printDittoMacs(macs *DittoMacs) {
-	fmt.Println("Ditto MACs:")
-	log.Infof("LoRa MAC: %s\n", macs.LoRaMAC)
-	log.Infof("BLE MAC: %s\n", macs.BleMac)
-
-	if macs.BleMac == "00:00:00:00:00:00" {
-		fmt.Println("Warning: Mac Not written, Erase tag and repeat")
-	} else {
-		fmt.Println("Mac Written")
-	}
+	return BleMac, nil
 }
 
 // ReadMACAddress reads the MAC address from blocks 11 and 12
-func (m *CardReader) ReadMACAddress() (string, error) {
+func (m *NfcCard) ReadMACAddress() (string, error) {
 	LoRa_Dword1, err := m.ReadBlock(11)
 	if err != nil {
 		return "", fmt.Errorf("failed to read block 11: %v", err)
@@ -436,7 +483,7 @@ func (m *CardReader) ReadMACAddress() (string, error) {
 }
 
 // ReadLocalName reads the local BLE name from blocks 3, 4, 5, and 6
-func (m *CardReader) ReadLocalName() (string, error) {
+func (m *NfcCard) ReadLocalName() (string, error) {
 	var readLocalValue strings.Builder
 
 	for block := 3; block <= 6; block++ {
@@ -469,11 +516,31 @@ func (m *CardReader) ReadLocalName() (string, error) {
 }
 
 // Close disconnects the card
-func (m *CardReader) Close() error {
-	return m.reader.DisconnectCard()
+func (m *NfcCard) Close() error {
+	return m.Reader.DisconnectCard()
 }
 
-func (m *CardReader) WriteLoraJoinEui(joinEui string) error {
+func (m *NfcCard) ReadBLELocalName() (string, error) {
+	log.Info("Reading BLE local name: ")
+	block22, err := m.ReadBlock(22)
+	if err != nil {
+		return "", err
+	}
+	block23, err := m.ReadBlock(23)
+	if err != nil {
+		return "", err
+	}
+	localBleName := fmt.Sprintf("%s%s", block22, block23)
+	ascii, err := decodeHexToASCII(localBleName)
+	if err != nil {
+		return "", err
+	}
+	log.Infof("RawBlockData: %s, ASCII: %s\n", localBleName, ascii)
+	return ascii, nil
+}
+
+// WriteLoraJoinEui writes the LoRa Join EUI to blocks 0 and 1, this is the unique 64 bits EUI from the network (eg. Senet)
+func (m *NfcCard) WriteLoraJoinEui(joinEui string) error {
 
 	//Split the key into 2 blocks
 	block1 := joinEui[:8]
@@ -487,24 +554,23 @@ func (m *CardReader) WriteLoraJoinEui(joinEui string) error {
 	if err != nil {
 		return err
 	}
-	return nil
+	return m.CalculateAndWriteCRC()
 }
 
-func (m *CardReader) ReadLoraJoinEui() (string, error) {
-	block, err := m.ReadBlock(0)
+func (m *NfcCard) ReadLoraJoinEui() (string, error) {
+	joinEuiWord1, err := m.ReadBlock(0)
 	if err != nil {
 		return "", err
 	}
-	block2, err := m.ReadBlock(1)
+	joinEuiWord2, err := m.ReadBlock(1)
 	if err != nil {
 		return "", err
 	}
-	joinEui := fmt.Sprintf("%s%s", block, block2)
-	return joinEui, nil
+	return fmt.Sprintf("%s%s", joinEuiWord1, joinEuiWord2), nil
 }
 
 // WriteLoraJoinKey writes the LoRa App Key to blocks 3, 4, 5, and 6, this is the random 128 bits key
-func (m *CardReader) WriteLoraJoinKey(loraAppKey string) error {
+func (m *NfcCard) WriteLoraJoinKey(loraAppKey string) error {
 	if len(loraAppKey) > 32 {
 		return fmt.Errorf("invalid LoRa App Key length, should be 32 characters in hex")
 	}
@@ -522,11 +588,11 @@ func (m *CardReader) WriteLoraJoinKey(loraAppKey string) error {
 			return fmt.Errorf("failed to read block %d: %v", i, err)
 		}
 	}
-	return nil
+	return m.CalculateAndWriteCRC()
 }
 
 // ReadLoraJoinKey reads the LoRa network key from blocks 7, 8, 9, and 10, this is the random 128 bits key
-func (m *CardReader) ReadLoraJoinKey() (string, error) {
+func (m *NfcCard) ReadLoraJoinKey() (string, error) {
 	blocks := make(map[int]string)
 	for i := 3; i <= 6; i++ {
 		block, err := m.ReadBlock(i)
@@ -559,23 +625,57 @@ func decodeHexToASCII(hexString string) (string, error) {
 	return asciiString, nil
 }
 
-func (m *CardReader) ReadBLELocalName() error {
-	log.Infof("Reading BLE local name: ")
-	block22, err := m.ReadBlock(22)
+func (m *NfcCard) WriteTagSleepBit(bitValue bool) error {
+	log.Infof("Writing Tag Sleep Bit: %t", bitValue)
+	block13, err := m.ReadBlock(13)
 	if err != nil {
+		log.Errorf("Failed to read block 13: %v", err)
 		return err
 	}
-	block23, err := m.ReadBlock(23)
+	finalBlock13 := ""
+	log.Infof("Read Block 9: %s", block13)
+	if bitValue {
+		finalBlock13 = fmt.Sprintf("%s%s%s", block13[0:2], "0", block13[3:])
+	} else {
+		finalBlock13 = fmt.Sprintf("%s%s%s", block13[0:2], "1", block13[3:])
+	}
+	log.Infof("Final Block 13: %s", finalBlock13)
+	_, err = m.WriteBlock(13, finalBlock13)
 	if err != nil {
+		log.Errorf("Failed to write block 13: %v", err)
 		return err
 	}
-	localBleName := fmt.Sprintf("%s%s", block22, block23)
-	ascii, err := decodeHexToASCII(localBleName)
-	if err != nil {
-		return err
+	return m.CalculateAndWriteCRC()
+}
+
+func (m *NfcCard) WriteBLELocalName(name string) error {
+	// Convert ASCII to asciiToHex
+	asciiToHex := encodeASCIIToHex(name)
+	log.Infof("bleLocalName asciiToHex: %s\n", asciiToHex)
+	// Ensure the asciiToHex string is exactly 8 bytes (16 characters)
+	if len(asciiToHex) > 16 {
+		return fmt.Errorf("name too long, maximum 8 bytes allowed")
 	}
-	log.Infof("RawBlockData: %s, ASCII: %s\n", localBleName, ascii)
-	return nil
+	asciiToHex = fmt.Sprintf("%-16s", asciiToHex)         // Pad with spaces at the end if shorter
+	asciiToHex = strings.ReplaceAll(asciiToHex, " ", "0") // Replace spaces with zeroes, :(
+
+	// Split the asciiToHex string into two 8-byte blocks
+	block22 := asciiToHex[:8]
+	block23 := asciiToHex[8:]
+	fmt.Printf("WriteBLELocalName blockData: %s | %s\n", block22, block23)
+	// Write to block 22
+	_, err := m.WriteBlock(22, block22)
+	if err != nil {
+		return fmt.Errorf("failed to write block 22: %w", err)
+	}
+
+	// Write to block 23
+	_, err = m.WriteBlock(23, block23)
+	if err != nil {
+		return fmt.Errorf("failed to write block 23: %w", err)
+	}
+
+	return m.CalculateAndWriteCRC()
 }
 
 // Helper function to encode ASCII to hex
@@ -587,7 +687,7 @@ func encodeASCIIToHex(s string) string {
 	return hexString
 }
 
-func (m *CardReader) ReadLoraDevEui() (string, error) {
+func (m *NfcCard) ReadLoraDevEui() (string, error) {
 	// Read LoRa MAC
 	loraDword1, err := m.ReadBlock(11)
 	if err != nil {
@@ -609,53 +709,31 @@ func (m *CardReader) ReadLoraDevEui() (string, error) {
 	return devEuiUpperCase, nil
 }
 
-func (m *CardReader) WriteLoraDevEui(loraDevEui string) error {
-	log.Infof("Writing LoRa DevEUI, %s", loraDevEui)
-	if len(loraDevEui) != 16 {
-		return errors.New("invalid lora deveui")
-	}
-	_, err := m.WriteBlock(11, loraDevEui[0:8])
+func (m *NfcCard) WriteTagPostBit(bitValue bool) error {
+	log.Infof("Writing Tag Post Bit, %v", bitValue)
+	block9, err := m.ReadBlock(0x09)
 	if err != nil {
+		log.Errorf("Failed to read block 9: %v", err)
 		return err
 	}
-	_, err = m.WriteBlock(12, loraDevEui[8:])
+	log.Infof("Read Block 9: %s", block9)
+
+	finalBlock9 := ""
+	if bitValue {
+		finalBlock9 = "01" + block9[2:]
+	} else {
+		finalBlock9 = "00" + block9[2:]
+	}
+	log.Infof("Final Block 9: %s", finalBlock9[:8])
+	_, err = m.WriteBlock(0x09, finalBlock9[:8])
 	if err != nil {
+		log.Errorf("Failed to write block 9: %v", err)
 		return err
 	}
-	return nil
+	return m.CalculateAndWriteCRC()
 }
 
-func (m *CardReader) WriteBLELocalName(name string) error {
-	// Convert ASCII to asciiToHex
-	asciiToHex := encodeASCIIToHex(name)
-	log.Infof("asciiToHex: %s\n", asciiToHex)
-	// Ensure the asciiToHex string is exactly 8 bytes (16 characters)
-	if len(asciiToHex) > 16 {
-		return fmt.Errorf("name too long, maximum 8 bytes allowed")
-	}
-	asciiToHex = fmt.Sprintf("%-16s", asciiToHex)         // Pad with spaces at the end if shorter
-	asciiToHex = strings.ReplaceAll(asciiToHex, " ", "0") // Replace spaces with zeroes, :(
-
-	// Split the asciiToHex string into two 8-byte blocks
-	block22 := asciiToHex[:8]
-	block23 := asciiToHex[8:]
-	log.Infof("WriteBLELocalName blockData: %s | %s\n", block22, block23)
-	// Write to block 22
-	_, err := m.WriteBlock(22, block22)
-	if err != nil {
-		return fmt.Errorf("failed to write block 22: %w", err)
-	}
-
-	// Write to block 23
-	_, err = m.WriteBlock(23, block23)
-	if err != nil {
-		return fmt.Errorf("failed to write block 23: %w", err)
-	}
-
-	return nil
-}
-
-func (m *CardReader) getUID() error {
+func (m *NfcCard) getUID() error {
 	uid, err := m.transmit("FFCA000000", 0x9000)
 	if err != nil {
 		return err
@@ -665,7 +743,7 @@ func (m *CardReader) getUID() error {
 }
 
 // ReadDittoSettings reads all settings from an Asset+ tag
-func (m *CardReader) ReadDittoSettings() (*DittoSettings, error) {
+func (m *NfcCard) ReadDittoSettings() (*DittoSettings, error) {
 	settings := &DittoSettings{}
 
 	// Read required blocks
@@ -802,6 +880,127 @@ func (m *CardReader) ReadDittoSettings() (*DittoSettings, error) {
 	settings.Hopping = parseHopping(reversedFlags2Bin[4:5])
 
 	return settings, nil
+}
+
+// ReadConfigurationForCRC reads blocks 0-47 and prepares data for CRC calculation
+func (m *NfcCard) ReadConfigurationForCRC() ([]byte, error) {
+	nfcData := make([]byte, 0, 192) // 48 blocks * 4 bytes per block = 192 bytes
+
+	// Read blocks 0 to 47
+	for block := 0; block <= 47; block++ {
+		blockData, err := m.ReadBlock(block)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read block %d: %v", block, err)
+		}
+
+		// Convert hex string to bytes
+		// Each block contains 8 hex chars representing 4 bytes
+		bytes, err := hex.DecodeString(blockData)
+		if err != nil {
+			return nil, fmt.Errorf("failed to decode block %d data: %v", block, err)
+		}
+
+		// Append the 4 bytes to nfcData
+		nfcData = append(nfcData, bytes...)
+	}
+
+	return nfcData, nil
+}
+
+// calculateCRC implements the CRC-16 CCITT algorithm
+func calculateCRC(data []byte) uint16 {
+	crc := uint16(0xFFFF)        // Initial value
+	polynomial := uint16(0x1021) // CRC-16 CCITT polynomial
+	for i := 0; i < len(data); i++ {
+		crc ^= uint16(uint16(data[i]) << 8)
+		for j := 0; j < 8; j++ {
+			if (crc & 0x8000) != 0 {
+				crc = uint16((uint16(crc) << 1) ^ polynomial)
+			} else {
+				crc <<= 1
+			}
+		}
+	}
+	return uint16(crc & 0xFFFF)
+}
+
+// CalculateAndWriteCRC calculates CRC for all configuration blocks and writes it
+func (m *NfcCard) CalculateAndWriteCRC() error {
+	// Read all configuration data
+	nfcData, err := m.ReadConfigurationForCRC()
+	if err != nil {
+		return fmt.Errorf("failed to read configuration: %v", err)
+	}
+
+	// Calculate CRC
+	crc := calculateCRC(nfcData)
+
+	// Reverse the CRC bytes and format for writing
+	reversedCRCHex := reverseCRC(crc)
+	log.Infof("Calculated CRC: 0x%04X, Reversed for storage: 0x%s", crc, reversedCRCHex)
+
+	// Write reversed CRC to designated block
+	_, err = m.WriteBlock(48, reversedCRCHex)
+	if err != nil {
+		return fmt.Errorf("failed to write CRC: %v", err)
+	}
+
+	return nil
+}
+
+// ValidateCRC reads the configuration and validates against stored CRC
+func (m *NfcCard) ValidateCRC() error {
+	log.Info("Validating CRC...")
+	// Read configuration data
+	nfcData, err := m.ReadConfigurationForCRC()
+	if err != nil {
+		return fmt.Errorf("failed to read configuration: %v", err)
+	}
+
+	// Calculate CRC
+	calculatedCRC := calculateCRC(nfcData)
+
+	// Read stored CRC from block 48
+	storedCRCBlock, err := m.ReadBlock(48)
+	if err != nil {
+		return fmt.Errorf("failed to read CRC block: %v", err)
+	}
+
+	// Extract and reverse the stored CRC bytes
+	lsb, _ := strconv.ParseUint(storedCRCBlock[0:2], 16, 8)
+	msb, _ := strconv.ParseUint(storedCRCBlock[2:4], 16, 8)
+	storedCRC := uint16(msb)<<8 | uint16(lsb)
+
+	log.Infof("Calculated CRC: 0x%04X, Stored CRC: 0x%04X", calculatedCRC, storedCRC)
+
+	// Compare CRCs
+	if calculatedCRC != storedCRC {
+		return fmt.Errorf("CRC validation failed: calculated=0x%04X, stored=0x%04X",
+			calculatedCRC, storedCRC)
+	}
+
+	return nil
+}
+
+// WriteLoraDevEui Modified write methods to update CRC
+func (m *NfcCard) WriteLoraDevEui(loraDevEui string) error {
+	// Write DevEUI
+	if len(loraDevEui) != 16 {
+		fmt.Printf("entered lora dev eui length is not 16, for '%s' it is == %d\n", loraDevEui, len(loraDevEui))
+		return errors.New("invalid lora deveui, len must be 16")
+	}
+
+	_, err := m.WriteBlock(11, loraDevEui[0:8])
+	if err != nil {
+		return err
+	}
+	_, err = m.WriteBlock(12, loraDevEui[8:])
+	if err != nil {
+		return err
+	}
+
+	// Calculate and write new CRC
+	return m.CalculateAndWriteCRC()
 }
 
 type DittoSettings struct {
@@ -1019,7 +1218,7 @@ const (
 	colorWhite  = "\033[37m"
 )
 
-func printStructuredOutput(m24lr *CardReader) {
+func printStructuredOutput(m24lr *NfcCard) {
 	fmt.Println(colorGreen + "=== RFID Tag Reader Output ===" + colorReset)
 
 	printSection("Basic Information", func() {
@@ -1034,14 +1233,10 @@ func printStructuredOutput(m24lr *CardReader) {
 	})
 
 	printSection("Ditto MACs", func() {
-		macs, _ := m24lr.ReadDittoMacs()
-		printField("LoRa MAC", strings.ToUpper(macs.LoRaMAC))
-		printField("BLE MAC", strings.ToUpper(macs.BleMac))
-		if macs.BleMac != "00:00:00:00:00:00" {
-			fmt.Println(colorGreen + "Mac Written" + colorReset)
-		} else {
-			fmt.Println(colorRed + "Warning: Mac Not written, Erase tag and repeat" + colorReset)
-		}
+		BleMac, _ := m24lr.ReadBleMac()
+		LoRaMAC, _ := m24lr.ReadLoraDevEui()
+		printField("LoRa MAC", strings.ToUpper(LoRaMAC))
+		printField("BLE MAC", strings.ToUpper(BleMac))
 	})
 
 	printSection("Local BLE Name", func() {
@@ -1120,4 +1315,14 @@ func PrintMappedDittoSettings(settings *DittoSettings) {
 
 func printMappedField(label, value string) {
 	log.Infof("%s%s:%s %s\n", colorYellow, label, colorReset, value)
+}
+
+// Helper function to reverse CRC bytes
+func reverseCRC(crc uint16) string {
+	// Convert CRC to bytes
+	msb := byte(crc >> 8)   // Most significant byte
+	lsb := byte(crc & 0xFF) // Least significant byte
+
+	// Format as hex string with reversed bytes and padded zeros
+	return fmt.Sprintf("%02X%02X0000", lsb, msb)
 }
