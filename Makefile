@@ -4,13 +4,15 @@ CODE_ENTRY := .
 
 # Version information
 VERSION_FILE := version.go
-VERSION := $(shell grep -E "Version.*=.*\".*\"" ${VERSION_FILE} | cut -d '"' -f 2)
+VERSION := $(shell grep -E "VERSION.*=.*\".*\"" ${VERSION_FILE} | cut -d '"' -f 2)
 GIT_COMMIT := $(shell git rev-list -1 HEAD)
 BUILD_TIME := $(shell date -u '+%Y-%m-%d_%I:%M:%S%p')
-echo "Current version: ${VERSION}"
+NEW_VERSION := $(shell git describe --tags --abbrev=0)
+
+
 # LDFLAGS for version information
 LDFLAGS := -ldflags="\
-    -X 'main.VERSION=${VERSION}' \
+    -X 'main.VERSION=${NEW_VERSION}' \
     -X 'main.GITCOMMIT=${GIT_COMMIT}' \
     -X 'main.BUILDTIME=${BUILD_TIME}' \
     -s -w"
@@ -23,37 +25,6 @@ version:
 	@echo "Git commit: ${GIT_COMMIT}"
 	@echo "Build time: ${BUILD_TIME}"
 
-bump-patch:
-	@echo "Bumping patch version..."
-	@VERSION_PARTS=(${VERSION//\./ }); \
-	V_MAJOR=$${VERSION_PARTS[0]}; \
-	V_MINOR=$${VERSION_PARTS[1]}; \
-	V_PATCH=$${VERSION_PARTS[2]}; \
-	V_PATCH=$$((V_PATCH + 1)); \
-	NEW_VERSION="$$V_MAJOR.$$V_MINOR.$$V_PATCH"; \
-	sed -i.bak "s/Version *= *\"${VERSION}\"/Version = \"$$NEW_VERSION\"/" ${VERSION_FILE} && rm ${VERSION_FILE}.bak; \
-	echo "Version bumped to: $$NEW_VERSION"
-
-bump-minor:
-	@echo "Bumping minor version..."
-	@VERSION_PARTS=(${VERSION//\./ }); \
-	V_MAJOR=$${VERSION_PARTS[0]}; \
-	V_MINOR=$${VERSION_PARTS[1]}; \
-	V_MINOR=$$((V_MINOR + 1)); \
-	NEW_VERSION="$$V_MAJOR.$$V_MINOR.0"; \
-	sed -i.bak "s/Version *= *\"${VERSION}\"/Version = \"$$NEW_VERSION\"/" ${VERSION_FILE} && rm ${VERSION_FILE}.bak; \
-	echo "Version bumped to: $$NEW_VERSION"
-
-bump-major:
-	@echo "Bumping major version..."
-	@VERSION_PARTS=(${VERSION//\./ }); \
-	V_MAJOR=$${VERSION_PARTS[0]}; \
-	V_MAJOR=$$((V_MAJOR + 1)); \
-	NEW_VERSION="$$V_MAJOR.0.0"; \
-	sed -i.bak "s/Version *= *\"${VERSION}\"/Version = \"$$NEW_VERSION\"/" ${VERSION_FILE} && rm ${VERSION_FILE}.bak; \
-	echo "Version bumped to: $$NEW_VERSION"
-
-# Rest of your Makefile remains the same...
 all: clean build-all
 
 build-all: build-mac build-windows
@@ -64,6 +35,15 @@ build-mac:
 	lipo -create -output ${BIN_DIR}mac/${BIN_NAME_PREFIX} ${BIN_DIR}mac/${BIN_NAME_PREFIX}_arm64 ${BIN_DIR}mac/${BIN_NAME_PREFIX}_amd64
 	rm ${BIN_DIR}mac/${BIN_NAME_PREFIX}_*
 	@echo "macOS build complete"
+
+update-version:
+	@echo "Bumping major version..."
+#	@VERSION_PARTS=(${VERSION//\./ }); \
+#	V_MAJOR=$${VERSION_PARTS[0]}; \
+#	V_MAJOR=$$((V_MAJOR + 1)); \
+#	NEW_VERSION="$$V_MAJOR.0.0";
+	@echo "Version bumped to: ${NEW_VERSION}"
+	sed -i '' "s/VERSION = \"[^\"]*\"/VERSION = "\"${NEW_VERSION}\""/" version.go
 
 build-windows:
 	@echo "Building for Windows..."

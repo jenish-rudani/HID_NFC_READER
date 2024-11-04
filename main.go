@@ -2,10 +2,13 @@ package main
 
 import (
 	"bitbucket.org/bluvision/pcsc/pcsc"
+	"bufio"
+	"encoding/csv"
 	"flag"
 	"fmt"
 	"github.com/jenish-rudani/HID_NFC_READER/internal/nfc"
 	"github.com/jenish-rudani/HID_NFC_READER/internal/utils/log"
+	"os"
 	"strconv"
 	"strings"
 )
@@ -21,9 +24,99 @@ func initCommandLine() {
 	flag.Parse()
 }
 
+func writeLoraInfoToCSV(filename string, info *nfc.LoraInfo, isNewFile bool) error {
+	file, err := os.OpenFile(filename, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return fmt.Errorf("failed to open CSV file: %v", err)
+	}
+	defer file.Close()
+
+	writer := csv.NewWriter(file)
+	defer writer.Flush()
+
+	// Write header if new file
+	if isNewFile {
+		header := []string{"Timestamp", "DevEUI", "JoinEUI", "JoinKey", "CRC Status"}
+		if err := writer.Write(header); err != nil {
+			return fmt.Errorf("failed to write CSV header: %v", err)
+		}
+	}
+
+	// Write data
+	record := []string{
+		info.Timestamp,
+		info.DevEUI,
+		info.JoinEUI,
+		info.JoinKey,
+		info.CRCStatus,
+	}
+
+	if err := writer.Write(record); err != nil {
+		return fmt.Errorf("failed to write CSV record: %v", err)
+	}
+
+	return nil
+}
+
 func nfcRunCommands(command string, nfcCardInstance *nfc.NfcCard) error {
 	var err error
 	switch command {
+
+	case "readloraloop":
+		filename := "lora_info.csv"
+		if params != "" {
+			filename = params
+		}
+
+		// Check if file exists
+		isNewFile := true
+		if _, err := os.Stat(filename); err == nil {
+			isNewFile = false
+		}
+
+		reader := bufio.NewReader(os.Stdin)
+		tagCount := 0
+
+		log.Info("Starting LoRa reading loop...")
+		log.Infof("Results will be saved to: %s", filename)
+		log.Info("Press 'x' to exit or any other key to read next tag...")
+
+		for {
+			fmt.Print("\nPress <Enter> to read next tag (or 'x' + <Enter> to exit): ")
+			input, _ := reader.ReadString('\n')
+			input = strings.TrimSpace(strings.ToLower(input))
+
+			if input == "x" {
+				log.Infof("Loop ended. Total tags read: %d", tagCount)
+				break
+			}
+
+			log.Info("Reading tag...")
+			info, err := nfcCardInstance.ReadLoraInfo()
+			if err != nil {
+				log.Errorf("Failed to read LoRa info: %v\n", err)
+				continue
+			}
+
+			// Print info to console
+			log.Info("Tag Read Successfully:")
+			log.Infof("DevEUI: %s", info.DevEUI)
+			log.Infof("JoinEUI: %s", info.JoinEUI)
+			log.Infof("JoinKey: %s", info.JoinKey)
+			log.Infof("CRC Status: %s", info.CRCStatus)
+
+			// Write to CSV
+			err = writeLoraInfoToCSV(filename, info, isNewFile)
+			if err != nil {
+				log.Errorf("Failed to write to CSV: %v\n", err)
+				continue
+			}
+
+			tagCount++
+			isNewFile = false
+			log.Infof("Tag information saved to %s (Total tags: %d)", filename, tagCount)
+		}
+
 	case "erase":
 		log.Warn("WARNING: This will erase all data from the NFC tag!")
 		if params != "confirm" {
@@ -352,6 +445,7 @@ func main() {
 			formattedParam = params
 		}
 	}
+	params = formattedParam
 
 	// Initialize PCSC
 	ctx, err := pcsc.NewContext()

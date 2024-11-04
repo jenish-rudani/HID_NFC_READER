@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf16"
 
 	"bitbucket.org/bluvision-cloud/kit/log"
@@ -284,6 +285,52 @@ func printBeaconInfo(info *BeaconInfo) {
 	log.Infof("Type: %s\n", info.BeaconType)
 	log.Infof("Name: %s\n", info.Name)
 	log.Infof("Image: %s\n", info.Image)
+}
+
+// LoraInfo Structure to hold LoRa information
+type LoraInfo struct {
+	Timestamp string
+	DevEUI    string
+	JoinEUI   string
+	JoinKey   string
+	CRCStatus string
+}
+
+func (m *NfcCard) ReadLoraInfo() (*LoraInfo, error) {
+	info := &LoraInfo{
+		Timestamp: time.Now().Format("2006-01-02 15:04:05"),
+	}
+
+	// Read DevEUI
+	devEui, err := m.ReadLoraDevEui()
+	if err != nil {
+		return nil, fmt.Errorf("failed to read DevEUI: %v", err)
+	}
+	info.DevEUI = strings.ToUpper(devEui)
+
+	// Read JoinEUI
+	joinEui, err := m.ReadLoraJoinEui()
+	if err != nil {
+		return nil, fmt.Errorf("failed to read JoinEUI: %v", err)
+	}
+	info.JoinEUI = strings.ToUpper(joinEui)
+
+	// Read JoinKey
+	joinKey, err := m.ReadLoraJoinKey()
+	if err != nil {
+		return nil, fmt.Errorf("failed to read JoinKey: %v", err)
+	}
+	info.JoinKey = strings.ToUpper(joinKey)
+
+	// Validate CRC
+	err = m.ValidateCRC()
+	if err != nil {
+		info.CRCStatus = "INVALID"
+	} else {
+		info.CRCStatus = "VALID"
+	}
+
+	return info, nil
 }
 
 func (m *NfcCard) EraseTag() error {
@@ -819,6 +866,7 @@ func (m *NfcCard) ReadDittoSettings() (*DittoSettings, error) {
 	settings.OperationalMode, _ = strconv.ParseInt(blocks[14][6:], 16, 64)
 
 	// Parse Block 7: 01080000
+	fmt.Println(blocks[7])
 	settings.LoRaEnable = parseLoRaEnable(blocks[7][:2])
 	settings.LoRaRegion = parseLoRaRegion(blocks[7][2:4])
 
