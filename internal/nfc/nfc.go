@@ -334,10 +334,10 @@ func (m *NfcCard) ReadLoraInfo() (*LoraInfo, error) {
 }
 
 func (m *NfcCard) EraseTag() error {
-	log.Info("Starting NFC tag erasure...")
+	log.Info("Starting NFC tag erasure by writing 0xFFFFFFFF to all blocks...")
 
-	// Write zeros to blocks 0-48
-	zeroBlock := "00000000" // 4 bytes of zeros in hex
+	// Write 0xFFFFFFFF to blocks 0-48
+	zeroBlock := "FFFFFFFF" // 4 bytes of Fs in hex
 
 	for block := 0; block <= 48; block++ {
 		log.Infof("Erasing block %d...", block)
