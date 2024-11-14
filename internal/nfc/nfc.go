@@ -337,7 +337,7 @@ func (m *NfcCard) EraseTag() error {
 	log.Info("Starting NFC tag erasure by writing 0xFFFFFFFF to all blocks...")
 
 	// Write 0xFFFFFFFF to blocks 0-48
-	zeroBlock := "FFFFFFFF" // 4 bytes of Fs in hex
+	zeroBlock := "ffffffff" // 4 bytes of Fs in hex
 
 	for block := 0; block <= 48; block++ {
 		log.Infof("Erasing block %d...", block)
@@ -564,7 +564,7 @@ func (m *NfcCard) ReadLocalName() (string, error) {
 
 // Close disconnects the card
 func (m *NfcCard) Close() error {
-	return m.Reader.DisconnectCard()
+	return m.Reader.DisconnectUnpowerCard()
 }
 
 func (m *NfcCard) ReadBLELocalName() (string, error) {

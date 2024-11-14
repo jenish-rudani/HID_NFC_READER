@@ -372,41 +372,40 @@ func SerialNumberTest() {
 		samReaders = append(samReaders, pcsc.NewReader(ctx, el))
 	}
 	for _, samReader := range samReaders {
-		sam, err := samReader.ConnectDirectShared()
+		sam, err := samReader.ConnectSamCard_T0()
 		if err != nil {
 			log.Errorf("%s\n", err)
 			continue
 		}
-
-		log.Infof("sam: %v", sam)
-		apdu, err := sam.ControlApdu(0x42000000+2079, getProductName)
+		fmt.Printf("######## ######### ######## ######## ######## ########\n")
+		var apdu []byte
+		apdu, err = sam.Apdu(getProductName)
 		if err != nil {
-			log.Errorf("error transmitting read firmware control apdu")
-			return
+			log.Errorf("error transmitting read firmware control apdu %v,  err: %v", apdu, err)
+			continue
 		}
 
 		productInfo, err := nfc.ParseAPDU(apdu)
 		if err != nil {
-			log.Errorf("error parsing parse apudu")
+			log.Errorf("error parsing parse apdu, apdu: % x, err: %v", apdu, err)
 		} else {
 			fmt.Printf("Product Name: %s\n", convertToASCII([]byte(productInfo.ValueRaw)))
 		}
 
-		apdu, err = sam.ControlApdu(0x42000000+2079, getFwVersion)
+		apdu, err = sam.Apdu(getFwVersion)
 		if err != nil {
-			log.Errorf("error transmitting read firmware control apdu")
-			return
+			log.Errorf("error transmitting read firmware control apdu %v,  err: %v", apdu, err)
+			continue
 		}
 		serialInfo, err := nfc.ParseAPDU(apdu)
 		if err != nil {
-			fmt.Printf("Error parsing serial number: %v\n", err)
+			fmt.Printf("Error parsing serial number: apdu % x,  err: %v", apdu, err)
 		} else {
 			fmt.Printf("Serial Number: %s\n", serialInfo.Value)
 		}
-		err = sam.DisconnectUnpowerCard()
+		err = sam.DisconnectCard()
 		if err != nil {
 			log.Errorf("error %v", err)
-
 		}
 	}
 
@@ -420,6 +419,11 @@ func main() {
 		fmt.Printf("HID NFC Reader v%s\n", VERSION)
 		fmt.Printf("Git commit: %s\n", GITCOMMIT)
 		fmt.Printf("Built at: %s\n", BUILDTIME)
+		return
+	}
+
+	if command == "srnr" {
+		SerialNumberTest()
 		return
 	}
 
@@ -461,6 +465,7 @@ func main() {
 		fmt.Printf("Failed to list readers: %v\n", err)
 		return
 	}
+	log.Infof("Found %d readers\n", len(rdrlst))
 
 	if len(rdrlst) == 0 {
 		fmt.Println("No readers found")
