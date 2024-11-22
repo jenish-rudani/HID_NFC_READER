@@ -413,7 +413,7 @@ func SerialNumberTest() {
 			log.Errorf("%s\n", err)
 			continue
 		}
-		fmt.Printf("######## ######### ######## ######## ######## ########\n")
+		fmt.Printf("######## ######### ######## Readers ######## ######## ########\n")
 		var apdu []byte
 		apdu, err = sam.Apdu(getProductName)
 		if err != nil {
@@ -443,13 +443,15 @@ func SerialNumberTest() {
 		if err != nil {
 			log.Errorf("error %v", err)
 		}
+		fmt.Printf("######## ######### ######## Done ######## ######## ########\n")
+
 	}
 
 }
 
 func printVersion() {
 	fmt.Printf("######## ######### ######## ######### ######## ########\n")
-	fmt.Printf("\tHID NFC Reader v%s\n", VERSION)
+	fmt.Printf("\tHID NFC Reader %s\n", VERSION)
 	fmt.Printf("\tGit commit: %s\n", GITCOMMIT)
 	fmt.Printf("\tBuilt at: %s\n", BUILDTIME)
 	fmt.Printf("######## ######### ######## ######### ######## ########\n")
@@ -460,7 +462,7 @@ func main() {
 
 	// Handle version flag
 	if versionFlag {
-		fmt.Printf("HID NFC Reader v%s\n", VERSION)
+		fmt.Printf("HID NFC Reader %s\n", VERSION)
 		fmt.Printf("Git commit: %s\n", GITCOMMIT)
 		fmt.Printf("Built at: %s\n", BUILDTIME)
 		return
