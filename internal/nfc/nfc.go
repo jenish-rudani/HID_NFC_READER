@@ -756,6 +756,65 @@ func (m *NfcCard) ReadLoraDevEui() (string, error) {
 	return devEuiUpperCase, nil
 }
 
+func (m *NfcCard) WriteLoraDwnTrgL(value uint8) error {
+	log.Warnf("Writing LoRa DwnTrgL: %d", value)
+	block9, err := m.ReadBlock(0x09)
+	if err != nil {
+		log.Errorf("Failed to read block 9: %v", err)
+		return err
+	}
+	log.Infof("Read Block 9: %s", block9)
+
+	block9bytes, err := extractBytes(block9)
+	if err != nil {
+		log.Errorf("Failed to extract bytes: %v", err)
+		return err
+	}
+
+	finalBlock9 := ""
+	finalBlock9 = fmt.Sprintf("%02X%02X%02X%02X", block9bytes[0], block9bytes[1], value, block9bytes[3])
+
+	log.Infof("Final Block 9: %s", finalBlock9[:8])
+	_, err = m.WriteBlock(0x09, finalBlock9[:8])
+	if err != nil {
+		log.Errorf("Failed to write block 9: %v", err)
+		return err
+	}
+
+	return m.CalculateAndWriteCRC()
+}
+
+func (m *NfcCard) WriteTagUplinkBit(bitValue bool) error {
+	log.Infof("Writing Tag Uplink Bit, %v", bitValue)
+	block9, err := m.ReadBlock(0x09)
+	if err != nil {
+		log.Errorf("Failed to read block 9: %v", err)
+		return err
+	}
+	log.Infof("Read Block 9: %s", block9)
+
+	finalBlock9 := ""
+	bytes, err := extractBytes(block9)
+	if err != nil {
+		log.Errorf("Failed to extract bytes: %v", err)
+		return err
+	}
+	if bitValue {
+		bytes[0] = bytes[0] | 0x02
+		finalBlock9 = fmt.Sprintf("%02X%s", bytes[0], block9[2:])
+	} else {
+		bytes[0] = ClearBit(bytes[0], 1)
+		finalBlock9 = fmt.Sprintf("%02X%s", bytes[0], block9[2:])
+	}
+	log.Infof("Final Block 9: %s", finalBlock9[:8])
+	_, err = m.WriteBlock(0x09, finalBlock9[:8])
+	if err != nil {
+		log.Errorf("Failed to write block 9: %v", err)
+		return err
+	}
+	return m.CalculateAndWriteCRC()
+}
+
 func (m *NfcCard) WriteTagPostBit(bitValue bool) error {
 	log.Infof("Writing Tag Post Bit, %v", bitValue)
 	block9, err := m.ReadBlock(0x09)
@@ -766,10 +825,17 @@ func (m *NfcCard) WriteTagPostBit(bitValue bool) error {
 	log.Infof("Read Block 9: %s", block9)
 
 	finalBlock9 := ""
+	bytes, err := extractBytes(block9)
+	if err != nil {
+		log.Errorf("Failed to extract bytes: %v", err)
+		return err
+	}
 	if bitValue {
-		finalBlock9 = "01" + block9[2:]
+		bytes[0] = bytes[0] | 0x01
+		finalBlock9 = fmt.Sprintf("%02X%s", bytes[0], block9[2:])
 	} else {
-		finalBlock9 = "00" + block9[2:]
+		bytes[0] = ClearBit(bytes[0], 0)
+		finalBlock9 = fmt.Sprintf("%02X%s", bytes[0], block9[2:])
 	}
 	log.Infof("Final Block 9: %s", finalBlock9[:8])
 	_, err = m.WriteBlock(0x09, finalBlock9[:8])
@@ -1373,4 +1439,26 @@ func reverseCRC(crc uint16) string {
 
 	// Format as hex string with reversed bytes and padded zeros
 	return fmt.Sprintf("%02X%02X0000", lsb, msb)
+}
+
+func extractBytes(hexString string) ([]byte, error) {
+	// Check input length
+	if len(hexString) != 8 {
+		return nil, errors.New("input must be exactly 8 hex characters (4 bytes)")
+	}
+
+	// Decode hex string to bytes
+	bytes, err := hex.DecodeString(hexString)
+	if err != nil {
+		return nil, fmt.Errorf("invalid hex string: %v", err)
+	}
+
+	return bytes, nil
+}
+
+// ClearBit clears (sets to 0) the bit at position pos in number n
+// pos starts from 0 (rightmost bit) to 7 (leftmost bit)
+func ClearBit(n uint8, pos uint) uint8 {
+	mask := uint8(^(1 << pos)) // Create a mask with all 1s except 0 at pos
+	return n & mask            // AND with mask to clear the bit
 }

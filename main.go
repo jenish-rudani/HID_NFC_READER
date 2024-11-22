@@ -287,6 +287,42 @@ func nfcRunCommands(command string, nfcCardInstance *nfc.NfcCard) error {
 		if err != nil {
 			log.Errorf("Failed to set sleep state: %v\n", err)
 		}
+	case "loraDwnTrgL":
+		if params == "" {
+			log.Errorf("Missing params\n")
+			break
+		}
+		loraFailedDownLinktrigerLeave, err := strconv.ParseUint(params, 10, 8)
+		if err != nil {
+			log.Errorf("Failed to parse params: %v\n", err)
+			break
+		}
+		err = nfcCardInstance.WriteLoraDwnTrgL(uint8(loraFailedDownLinktrigerLeave))
+		if err != nil {
+			log.Errorf("Failed to write loraDwnTrgL: %v\n", err)
+			break
+		}
+		log.Info("loraDwnTrgL written successfully")
+
+	case "uplinkEnable":
+		if params == "" {
+			log.Errorf("Missing params\n")
+			break
+		}
+		//Extract Params
+		bitValue, err := strconv.ParseBool(params)
+		if err != nil {
+			log.Errorf("Failed to parse params: %v\n", err)
+			break
+		}
+
+		err = nfcCardInstance.WriteTagUplinkBit(bitValue)
+		if err != nil {
+			log.Errorf("Failed to write tag post bit: %v\n", err)
+			break
+		}
+		log.Info("Tag post bit written successfully")
+
 	case "tagpostbit":
 		if params == "" {
 			log.Errorf("Missing params\n")
@@ -411,6 +447,14 @@ func SerialNumberTest() {
 
 }
 
+func printVersion() {
+	fmt.Printf("######## ######### ######## ######### ######## ########\n")
+	fmt.Printf("\tHID NFC Reader v%s\n", VERSION)
+	fmt.Printf("\tGit commit: %s\n", GITCOMMIT)
+	fmt.Printf("\tBuilt at: %s\n", BUILDTIME)
+	fmt.Printf("######## ######### ######## ######### ######## ########\n")
+}
+
 func main() {
 	initCommandLine()
 
@@ -421,6 +465,7 @@ func main() {
 		fmt.Printf("Built at: %s\n", BUILDTIME)
 		return
 	}
+	printVersion()
 
 	if command == "srnr" {
 		SerialNumberTest()
