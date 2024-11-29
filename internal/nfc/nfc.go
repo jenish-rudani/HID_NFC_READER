@@ -1182,8 +1182,20 @@ func (m *NfcCard) PrintConfigFields(filePath string) error {
 	printField("BLE Reference Tag RSSI Threshold", bleRssiThreshold, "")
 
 	// BLE Reference Tag Filter
+	var result []byte
 	bleFilterId := getBytes(101, 116)
-	printField("BLE Reference Tag Filter ID", hex.EncodeToString(bleFilterId), "")
+	end := len(bleFilterId)
+	for end > 0 && bleFilterId[end-1] == 0x00 {
+		end--
+	}
+	result = bleFilterId[:end]
+	var output string
+	if isPrintableASCII(result) {
+		output = string(result)
+	} else {
+		output = hex.EncodeToString(result)
+	}
+	printField("BLE Reference Tag Filter ID", output, "")
 
 	// Advertisement Type
 	bleAdvType := data[117] & 0x01
@@ -1789,4 +1801,14 @@ func extractBytes(hexString string) ([]byte, error) {
 func ClearBit(n uint8, pos uint) uint8 {
 	mask := uint8(^(1 << pos)) // Create a mask with all 1s except 0 at pos
 	return n & mask            // AND with mask to clear the bit
+}
+
+// Helper function to check if a byte slice is fully ASCII-printable
+func isPrintableASCII(data []byte) bool {
+	for _, b := range data {
+		if b < 32 || b > 126 { // Printable ASCII range: 32-126
+			return false
+		}
+	}
+	return true
 }
