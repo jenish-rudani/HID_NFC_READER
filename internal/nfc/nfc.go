@@ -1052,13 +1052,13 @@ func (m *NfcCard) PrintConfigFields(filePath string) error {
 	// Extract and print all fields
 	// LORA Related Fields
 	joinEUI := getBytes(0, 7)
-	printField("LORA JoinServerEUI", hex.EncodeToString(joinEUI), "Join Server ID")
+	printField("LORA JoinEUI", hex.EncodeToString(joinEUI), "JoinEui")
 
 	devAddr := getBytes(8, 11)
-	printField("LORA DevAddr", hex.EncodeToString(devAddr), "Device Address")
+	printField("LORA DevAddr", hex.EncodeToString(devAddr), "LoraDevAddr(unSupported)")
 
 	appKey := getBytes(12, 27)
-	printField("LORA AppKey", hex.EncodeToString(appKey), "Shared Gateway Key")
+	printField("LORA JoinKey", hex.EncodeToString(appKey), "JoinKey")
 
 	loraEnable := data[28]
 	enableStatus := "Disabled"
@@ -1097,7 +1097,7 @@ func (m *NfcCard) PrintConfigFields(filePath string) error {
 
 	// DevEUI
 	devEUI := getBytes(44, 51)
-	printField("LORA DevEUI", hex.EncodeToString(devEUI), "MAC Address")
+	printField("LORA DevEUI", hex.EncodeToString(devEUI), "DevEui")
 
 	// Tag Status (Flags)
 	flags := data[53]
@@ -1207,7 +1207,7 @@ func (m *NfcCard) PrintConfigFields(filePath string) error {
 	// Button Press Behavior
 	btnPressBehavior := data[118] & 0x01
 	printField("Button Press Behavior", btnPressBehavior, map[uint8]string{
-		0: "Standard behavior",
+		0: "Standard behavior/Enable Uplink",
 		1: "Disable uplink, led, buzzer",
 	}[btnPressBehavior])
 
