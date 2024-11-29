@@ -1286,7 +1286,7 @@ func (m *NfcCard) GenerateConfigBin(parameters string) error {
 		if err != nil {
 			return fmt.Errorf("failed to decode block %d data: %v", block, err)
 		}
-		log.Infof("Block %02d: %X\n", block, bytes)
+		fmt.Printf("\tBlock %02d: %X\n", block, bytes)
 
 		// Append the 4 bytes to nfcData
 		nfcData = append(nfcData, bytes...)
