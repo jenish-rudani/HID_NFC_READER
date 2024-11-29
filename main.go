@@ -65,7 +65,7 @@ func nfcRunCommands(command string, nfcCardInstance *nfc.NfcCard) error {
 	switch command {
 
 	case "readAllBlocks":
-		err = nfcCardInstance.ReadAllBlocks()
+		_, err = nfcCardInstance.ReadAllBlocks(true)
 		if err != nil {
 			log.Errorf("Failed to read all blocks: %v\n", err)
 			break
@@ -75,7 +75,7 @@ func nfcRunCommands(command string, nfcCardInstance *nfc.NfcCard) error {
 			log.Errorf("Missing params (Binary File Name)\n")
 			break
 		}
-		err = nfcCardInstance.PrintConfigFields(params)
+		err = nfcCardInstance.PrintConfigFields(params, true)
 		if err != nil {
 			log.Errorf("Failed to read %s, err: %v\n", params, err)
 			break
@@ -314,14 +314,13 @@ func nfcRunCommands(command string, nfcCardInstance *nfc.NfcCard) error {
 			log.Warn("Join Key has default value - needs to be programmed")
 		}
 
-		settings, err := nfcCardInstance.ReadDittoSettings()
+		err = nfcCardInstance.PrintConfigFields("", false)
 		if err != nil {
-			log.Errorf("Failed to read settings: %v\n", err)
+			log.Errorf("Failed to print config fields: %v\n", err)
 			break
 		}
-		nfc.PrintMappedDittoSettings(settings)
-
 		fmt.Println("\nCompleted reading LoRa information")
+
 	case "sleep":
 		if params == "" {
 			log.Errorf("Missing params\n")

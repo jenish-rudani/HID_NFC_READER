@@ -1010,31 +1010,47 @@ func (m *NfcCard) ReadDittoSettings() (*DittoSettings, error) {
 	return settings, nil
 }
 
-func (m *NfcCard) ReadAllBlocks() error {
+func (m *NfcCard) ReadAllBlocks(isDebug bool) ([]byte, error) {
+	var blocks []byte
 	for i := 0; i <= 47; i++ {
-		block, err := m.ReadBlock(i)
+		blockData, err := m.ReadBlock(i)
 		if err != nil {
-			return err
+			return nil, err
 		}
-		fmt.Printf("Block %02d: %s\n", i, strings.ToUpper(block))
+		if isDebug {
+			fmt.Printf("Block %02d: %s\n", i, strings.ToUpper(blockData))
+		}
+		bytes, err := hex.DecodeString(blockData)
+		if err != nil {
+			return nil, fmt.Errorf("failed to decode block %d data: %v", i, err)
+		}
+		blocks = append(blocks, bytes...)
 	}
 
-	return nil
+	return blocks, nil
 }
 
 // PrintConfigFields reads the binary configuration file and prints fields with their descriptions
-func (m *NfcCard) PrintConfigFields(filePath string) error {
+func (m *NfcCard) PrintConfigFields(filePath string, ifFile bool) error {
 	// Read the binary file
-	data, err := os.ReadFile(filePath)
-	if err != nil {
-		return fmt.Errorf("failed to read file: %v", err)
-	}
+	var data []byte
+	var err error
+	if ifFile {
+		data, err = os.ReadFile(filePath)
+		if err != nil {
+			return fmt.Errorf("failed to read file: %v", err)
+		}
 
-	// Check if file size is correct (192 bytes = 48 blocks * 4 bytes)
-	if len(data) != 192 {
-		return fmt.Errorf("invalid file size: expected 192 bytes, got %d bytes", len(data))
+		// Check if file size is correct (192 bytes = 48 blocks * 4 bytes)
+		if len(data) != 192 {
+			return fmt.Errorf("invalid file size: expected 192 bytes, got %d bytes", len(data))
+		}
+	} else {
+		data, err = m.ReadAllBlocks(false)
+		if err != nil {
+			return err
+		}
 	}
-
 	// Helper function to extract bytes for a position range
 	getBytes := func(start, end int) []byte {
 		return data[start : end+1]
@@ -1273,7 +1289,7 @@ func (m *NfcCard) GenerateConfigBin(parameters string) error {
 	// Read blocks 0 to 47
 	for block := 0; block <= 47; block++ {
 		//We need to skip some blocks
-		blockData = "00000000"
+		blockData = "FFFFFFFF"
 		err = nil
 		if (block >= ASSET_PLUS_LORA_JOIN_EUI_BLOCK_MSB && block <= ASSET_PLUS_LORA_JOIN_EUI_BLOCK_LSB) ||
 			(block >= ASSET_PLUS_LORA_JOIN_KEY_BLOCK_MSB1 && block <= ASSET_PLUS_LORA_JOIN_KEY_BLOCK_LSB0) ||
@@ -1281,14 +1297,14 @@ func (m *NfcCard) GenerateConfigBin(parameters string) error {
 			(block == ASSET_PLUS_BLE_MAC_MSB) ||
 			(block >= ASSET_PLUS_BLE_LOCAL_NAME_MSB && block <= ASSET_PLUS_BLE_LOCAL_NAME_LSB) {
 			//fmt.Println("Skipping block in GenerateConfigBin", block)
-			blockData = "00000000"
+			blockData = "FFFFFFFF"
 		} else {
 			blockData, err = m.ReadBlock(block)
 			if err != nil {
 				return fmt.Errorf("failed to read block %d: %v", block, err)
 			}
 			if block == ASSET_PLUS_BLE_MAC_LSB { //This needs to be handled differently because only first two bytes are occupied here
-				blockData = fmt.Sprintf("%s%s", "0000", blockData[4:])
+				blockData = fmt.Sprintf("%s%s", "FFFF", blockData[4:])
 			}
 		}
 
