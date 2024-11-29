@@ -1,9 +1,11 @@
 package nfc
 
 import (
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -455,23 +457,36 @@ func (m *NfcCard) ICReference() error {
 }
 
 func (m *NfcCard) transmit(cmdHex string, expectedSW uint16) (string, error) {
-	cmd, err := hex.DecodeString(cmdHex)
+	var retries int
+	var resp []byte
+	var cmd []byte
+	var err error
+	cmd, err = hex.DecodeString(cmdHex)
 	if err != nil {
-		return "", fmt.Errorf("failed to decode command: %v", err)
+		return "", err
 	}
+	for retries < 3 {
+		retries++
 
-	resp, err := m.Reader.Apdu(cmd)
-	if err != nil {
-		return "", fmt.Errorf("transmission failed: %v", err)
+		resp, err = m.Reader.Apdu(cmd)
+		if err != nil {
+			time.Sleep(50 * time.Millisecond)
+			continue
+		}
+		if len(resp) < 2 {
+			time.Sleep(5 * time.Millisecond)
+			continue
+		}
+		sw := uint16(resp[len(resp)-2])<<8 | uint16(resp[len(resp)-1])
+		if sw != expectedSW {
+			log.Warnf("nfc error, response 0x% X", resp)
+			time.Sleep(5 * time.Millisecond)
+			continue
+		}
+		break
 	}
-
-	if len(resp) < 2 {
-		return "", fmt.Errorf("response too short")
-	}
-
-	sw := uint16(resp[len(resp)-2])<<8 | uint16(resp[len(resp)-1])
-	if sw != expectedSW {
-		return "", fmt.Errorf("unexpected status word: %04X", sw)
+	if retries == 3 {
+		return "", fmt.Errorf("error in nfc card operation: %v", err)
 	}
 
 	return hex.EncodeToString(resp[:len(resp)-2]), nil
@@ -837,7 +852,7 @@ func (m *NfcCard) WriteTagPostBit(bitValue bool) error {
 		bytes[0] = ClearBit(bytes[0], 0)
 		finalBlock9 = fmt.Sprintf("%02X%s", bytes[0], block9[2:])
 	}
-	log.Infof("Final Block 9: %s", finalBlock9[:8])
+	fmt.Printf("Final Block 9: %s", finalBlock9[:8])
 	_, err = m.WriteBlock(0x09, finalBlock9[:8])
 	if err != nil {
 		log.Errorf("Failed to write block 9: %v", err)
@@ -932,7 +947,6 @@ func (m *NfcCard) ReadDittoSettings() (*DittoSettings, error) {
 	settings.OperationalMode, _ = strconv.ParseInt(blocks[14][6:], 16, 64)
 
 	// Parse Block 7: 01080000
-	fmt.Println(blocks[7])
 	settings.LoRaEnable = parseLoRaEnable(blocks[7][:2])
 	settings.LoRaRegion = parseLoRaRegion(blocks[7][2:4])
 
@@ -994,6 +1008,320 @@ func (m *NfcCard) ReadDittoSettings() (*DittoSettings, error) {
 	settings.Hopping = parseHopping(reversedFlags2Bin[4:5])
 
 	return settings, nil
+}
+
+func (m *NfcCard) ReadAllBlocks() error {
+	for i := 0; i <= 47; i++ {
+		block, err := m.ReadBlock(i)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("Block %02d: %s\n", i, strings.ToUpper(block))
+	}
+
+	return nil
+}
+
+// PrintConfigFields reads the binary configuration file and prints fields with their descriptions
+func (m *NfcCard) PrintConfigFields(filePath string) error {
+	// Read the binary file
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return fmt.Errorf("failed to read file: %v", err)
+	}
+
+	// Check if file size is correct (192 bytes = 48 blocks * 4 bytes)
+	if len(data) != 192 {
+		return fmt.Errorf("invalid file size: expected 192 bytes, got %d bytes", len(data))
+	}
+
+	// Helper function to extract bytes for a position range
+	getBytes := func(start, end int) []byte {
+		return data[start : end+1]
+	}
+
+	// Define a print function that prints field name, value and additional info
+	printField := func(name string, value interface{}, additional string) {
+		if additional != "" {
+			fmt.Printf("%s%-35s%s: %s%-20v (%s)%s\n", colorCyan, name, colorReset, colorYellow, value, additional, colorReset)
+		} else {
+			fmt.Printf("%s%-35s%s: %s%v%s\n", colorCyan, name, colorReset, colorYellow, value, colorReset)
+		}
+	}
+
+	// Extract and print all fields
+	// LORA Related Fields
+	joinEUI := getBytes(0, 7)
+	printField("LORA JoinServerEUI", hex.EncodeToString(joinEUI), "Join Server ID")
+
+	devAddr := getBytes(8, 11)
+	printField("LORA DevAddr", hex.EncodeToString(devAddr), "Device Address")
+
+	appKey := getBytes(12, 27)
+	printField("LORA AppKey", hex.EncodeToString(appKey), "Shared Gateway Key")
+
+	loraEnable := data[28]
+	enableStatus := "Disabled"
+	if loraEnable == 1 {
+		enableStatus = "Enabled"
+	}
+	printField("LORA Enable", loraEnable, enableStatus)
+
+	loraRegion := data[29]
+	regionMap := map[uint8]string{
+		0: "AS923_GRP1", 1: "AU915", 5: "EU868",
+		6: "KR920", 7: "IN865", 8: "US915",
+		10: "AS923_GRP2", 11: "AS923_GRP3",
+	}
+	printField("LORA Region", loraRegion, regionMap[loraRegion])
+
+	devNonce := binary.LittleEndian.Uint16(getBytes(30, 31))
+	printField("LORA DevNonce", devNonce, "")
+
+	dataRate := data[32]
+	drMap := map[uint8]string{
+		0: "DR0", 1: "DR1", 2: "DR2", 3: "DR3", 4: "DR4",
+	}
+	if dataRate >= 5 {
+		printField("LORA Data Rate", dataRate, "ADR")
+	} else {
+		printField("LORA Data Rate", dataRate, drMap[dataRate])
+	}
+
+	beaconRate := data[33]
+	printField("LORA Beacon Rate (DBR)", beaconRate, "hours")
+
+	// Accelerometer
+	accelSensitivity := data[37]
+	printField("Accelerometer Sensitivity", accelSensitivity, "0=Off, 10=Most Sensitive")
+
+	// DevEUI
+	devEUI := getBytes(44, 51)
+	printField("LORA DevEUI", hex.EncodeToString(devEUI), "MAC Address")
+
+	// Tag Status (Flags)
+	flags := data[53]
+	tagEnabled := (flags >> 4) & 1
+	debugTones := flags & 1
+	printField("Tag Status", tagEnabled, fmt.Sprintf("Tag %s, Debug Tones %s",
+		map[uint8]string{0: "Disabled", 1: "Enabled"}[tagEnabled],
+		map[uint8]string{0: "Disabled", 1: "Enabled"}[debugTones]))
+
+	// Device Information
+	hwID := data[60]
+	printField("Hardware ID", hwID, "")
+
+	fwID := float64(data[61]) / 10.0
+	printField("Firmware Version", fwID, "")
+
+	devID := data[62]
+	printField("Device ID", devID, "Project 21 (Ditto)")
+
+	settingsVer := data[63]
+	printField("Settings Version", settingsVer, "")
+
+	// ... Continue with other fields based on the positions
+	// Add additional fields as needed following the same pattern
+	// Alert Buzzer Configuration
+	buzzerDuty := binary.LittleEndian.Uint16(getBytes(64, 65))
+	printField("Alert Buzzer Duty", buzzerDuty, "MS between tone switch")
+
+	buzzerFreqOn := binary.LittleEndian.Uint16(getBytes(66, 67))
+	printField("Alert Buzzer Freq On", buzzerFreqOn, "Hz")
+
+	buzzerFreqOff := binary.LittleEndian.Uint16(getBytes(68, 69))
+	printField("Alert Buzzer Freq Off", buzzerFreqOff, "Hz")
+
+	alertDuration := binary.LittleEndian.Uint16(getBytes(70, 71))
+	printField("Alert Duration", alertDuration, "Seconds")
+
+	// BLE Configuration
+	bleMac := getBytes(72, 77)
+	printField("Nordic BLE MAC Address", hex.EncodeToString(bleMac), "")
+
+	alarmBeaconRate := data[78]
+	printField("Alarm Beacon Rate", alarmBeaconRate, "")
+
+	bleGain := int8(data[79]) // signed 8-bit value
+	printField("BLE Tx Pwr", bleGain, "dBm")
+
+	// Motion Detection
+	stationaryThreshold := binary.LittleEndian.Uint16(getBytes(82, 83))
+	printField("Stationary Threshold", stationaryThreshold, "Range 0 to 15240")
+
+	movingThreshold := binary.LittleEndian.Uint16(getBytes(84, 85))
+	printField("Moving Threshold", movingThreshold, "Range 0 to 15240")
+
+	accelWindow := data[86]
+	printField("Accel Activity Window", accelWindow, "Seconds (Default 20)")
+
+	accelThreshold := data[87]
+	printField("Accel Activity Threshold", accelThreshold, "Events (Default 2)")
+
+	// BLE Local Name
+	var bleName strings.Builder
+	for _, b := range getBytes(88, 95) {
+		if b != 0 {
+			bleName.WriteByte(b)
+		}
+	}
+	bleNameStr := bleName.String()
+	if bleNameStr == "" {
+		bleNameStr = "SenseA+" // default name
+	}
+	printField("BLE Local Name", bleNameStr, "")
+
+	// BLE Configuration
+	bleAdvRate := binary.LittleEndian.Uint16(getBytes(96, 97))
+	printField("BLE Advertising Beacon Rate", bleAdvRate, "Seconds")
+
+	bleScanWindow := binary.LittleEndian.Uint16(getBytes(98, 99))
+	printField("BLE Reference Tag Scan Window", bleScanWindow, "ms")
+
+	bleRssiThreshold := int8(data[100])
+	printField("BLE Reference Tag RSSI Threshold", bleRssiThreshold, "")
+
+	// BLE Reference Tag Filter
+	bleFilterId := getBytes(101, 116)
+	printField("BLE Reference Tag Filter ID", hex.EncodeToString(bleFilterId), "")
+
+	// Advertisement Type
+	bleAdvType := data[117] & 0x01
+	printField("BLE Advertisement Type", bleAdvType, map[uint8]string{
+		0: "Default advertisement",
+		1: "sBeacon",
+	}[bleAdvType])
+
+	// Button Press Behavior
+	btnPressBehavior := data[118] & 0x01
+	printField("Button Press Behavior", btnPressBehavior, map[uint8]string{
+		0: "Standard behavior",
+		1: "Disable uplink, led, buzzer",
+	}[btnPressBehavior])
+
+	// LoRaWAN Class B Configuration
+	pingSlotPeriod := data[119]
+	printField("LoRaWAN Class B Ping Slot Period", pingSlotPeriod, "Seconds")
+
+	timeoutBeacons := data[120]
+	printField("LoRaWAN Class B Timeout", timeoutBeacons, "Minutes")
+
+	// Flags for positioning and class selection
+	posFlags := data[123]
+	bleRefTagEnable := posFlags & 0x03
+	loraWanClass := (posFlags >> 4) & 0x03
+	printField("BLE Reference Tag/Blufi Positioning", bleRefTagEnable, map[uint8]string{
+		0: "Deactivate",
+		1: "Reference tags",
+		2: "Blufis",
+	}[bleRefTagEnable])
+	printField("LoRaWAN Class", loraWanClass, map[uint8]string{
+		0: "Class A",
+		1: "Class B",
+		2: "Class C",
+	}[loraWanClass])
+
+	// LoRaWAN configuration flags
+	loraFlags := data[124]
+	confirmedUplinks := loraFlags & 0x01
+	subBandHopping := (loraFlags >> 4) & 0x01
+	printField("LoRaWAN Confirmed Uplinks", confirmedUplinks, map[uint8]string{
+		0: "Deactivated",
+		1: "Activated",
+	}[confirmedUplinks])
+	printField("LoRaWAN Sub-band Hopping", subBandHopping, map[uint8]string{
+		0: "Deactivated",
+		1: "Activated",
+	}[subBandHopping])
+
+	return nil
+}
+
+const (
+	ASSET_PLUS_LORA_JOIN_EUI_BLOCK_MSB  = 0
+	ASSET_PLUS_LORA_JOIN_EUI_BLOCK_LSB  = 1
+	ASSET_PLUS_LORA_JOIN_KEY_BLOCK_MSB1 = 3
+	ASSET_PLUS_LORA_JOIN_KEY_BLOCK_MSB0 = 4
+	ASSET_PLUS_LORA_JOIN_KEY_BLOCK_LSB1 = 5
+	ASSET_PLUS_LORA_JOIN_KEY_BLOCK_LSB0 = 6
+	ASSET_PLUS_LORA_DEV_EUI_BLOCK_MSB   = 11
+	ASSET_PLUS_LORA_DEV_EUI_BLOCK_LSB   = 12
+	ASSET_PLUS_BLE_MAC_MSB              = 18
+	ASSET_PLUS_BLE_MAC_LSB              = 19
+	ASSET_PLUS_BLE_LOCAL_NAME_MSB       = 22
+	ASSET_PLUS_BLE_LOCAL_NAME_LSB       = 23
+)
+
+// GenerateConfigBin generates the configuration data for the tag and generates a binary file
+func (m *NfcCard) GenerateConfigBin(parameters string) error {
+
+	nfcData := make([]byte, 0, 192) // 48 blocks * 4 bytes per block = 192 bytes
+	var blockData string
+	var err error
+	// Read blocks 0 to 47
+	for block := 0; block <= 47; block++ {
+		//We need to skip some blocks
+		blockData = "00000000"
+		err = nil
+		if (block >= ASSET_PLUS_LORA_JOIN_EUI_BLOCK_MSB && block <= ASSET_PLUS_LORA_JOIN_EUI_BLOCK_LSB) ||
+			(block >= ASSET_PLUS_LORA_JOIN_KEY_BLOCK_MSB1 && block <= ASSET_PLUS_LORA_JOIN_KEY_BLOCK_LSB0) ||
+			(block >= ASSET_PLUS_LORA_DEV_EUI_BLOCK_MSB && block <= ASSET_PLUS_LORA_DEV_EUI_BLOCK_LSB) ||
+			(block == ASSET_PLUS_BLE_MAC_MSB) ||
+			(block >= ASSET_PLUS_BLE_LOCAL_NAME_MSB && block <= ASSET_PLUS_BLE_LOCAL_NAME_LSB) {
+			//fmt.Println("Skipping block in GenerateConfigBin", block)
+			blockData = "00000000"
+		} else {
+			blockData, err = m.ReadBlock(block)
+			if err != nil {
+				return fmt.Errorf("failed to read block %d: %v", block, err)
+			}
+			if block == ASSET_PLUS_BLE_MAC_LSB { //This needs to be handled differently because only first two bytes are occupied here
+				blockData = fmt.Sprintf("%s%s", "0000", blockData[4:])
+			}
+		}
+
+		// Convert hex string to bytes
+		// Each block contains 8 hex chars representing 4 bytes
+		bytes, err := hex.DecodeString(blockData)
+		if err != nil {
+			return fmt.Errorf("failed to decode block %d data: %v", block, err)
+		}
+		log.Infof("Block %02d: %X\n", block, bytes)
+
+		// Append the 4 bytes to nfcData
+		nfcData = append(nfcData, bytes...)
+	}
+
+	// remove file if exists
+	if _, err := os.Stat(parameters); err == nil {
+		err = os.Remove(parameters)
+		if err != nil {
+			return err
+		}
+	}
+
+	file, err := os.OpenFile(parameters, os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return err
+	}
+
+	defer func(file *os.File) {
+		err := file.Close()
+		if err != nil {
+			log.Fatal(err)
+		}
+	}(file)
+
+	write, err := file.Write(nfcData)
+	if err != nil {
+		return err
+	}
+
+	if write != len(nfcData) {
+		return errors.New("failed to write all data to file")
+	}
+
+	return nil
 }
 
 // ReadConfigurationForCRC reads blocks 0-47 and prepares data for CRC calculation
@@ -1428,7 +1756,7 @@ func PrintMappedDittoSettings(settings *DittoSettings) {
 }
 
 func printMappedField(label, value string) {
-	log.Infof("%s%s:%s %s\n", colorYellow, label, colorReset, value)
+	fmt.Printf("\t%s%s:%s %s\n", colorYellow, label, colorReset, value)
 }
 
 // Helper function to reverse CRC bytes

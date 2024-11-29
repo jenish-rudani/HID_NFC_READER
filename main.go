@@ -3,11 +3,13 @@ package main
 import (
 	"bitbucket.org/bluvision/pcsc/pcsc"
 	"bufio"
+	"encoding/base64"
 	"encoding/csv"
 	"flag"
 	"fmt"
 	"github.com/jenish-rudani/HID_NFC_READER/internal/nfc"
 	"github.com/jenish-rudani/HID_NFC_READER/internal/utils/log"
+	"math/big"
 	"os"
 	"strconv"
 	"strings"
@@ -62,6 +64,35 @@ func nfcRunCommands(command string, nfcCardInstance *nfc.NfcCard) error {
 	var err error
 	switch command {
 
+	case "readAllBlocks":
+		err = nfcCardInstance.ReadAllBlocks()
+		if err != nil {
+			log.Errorf("Failed to read all blocks: %v\n", err)
+			break
+		}
+	case "readConfigBin":
+		if params == "" {
+			log.Errorf("Missing params (Binary File Name)\n")
+			break
+		}
+		err = nfcCardInstance.PrintConfigFields(params)
+		if err != nil {
+			log.Errorf("Failed to read %s, err: %v\n", params, err)
+			break
+		}
+
+	case "generateConfigBin":
+		if params == "" {
+			log.Warn("Missing params (Binary File Name), Using default name: AssetPlus_Config.bin\n")
+			params = "AssetPlus_Config.bin"
+		}
+		err = nfcCardInstance.GenerateConfigBin(params)
+		if err != nil {
+			log.Errorf("Failed to generate %s, err: %v\n", params, err)
+			break
+		}
+		fmt.Printf("Generated %s successfully\n", params)
+
 	case "readloraloop":
 		filename := "lora_info.csv"
 		if params != "" {
@@ -77,9 +108,9 @@ func nfcRunCommands(command string, nfcCardInstance *nfc.NfcCard) error {
 		reader := bufio.NewReader(os.Stdin)
 		tagCount := 0
 
-		log.Info("Starting LoRa reading loop...")
-		log.Infof("Results will be saved to: %s", filename)
-		log.Info("Press 'x' to exit or any other key to read next tag...")
+		fmt.Println("Starting LoRa reading loop...")
+		fmt.Printf("Results will be saved to: %s\n", filename)
+		fmt.Println("Press 'x' to exit or any other key to read next tag...")
 
 		for {
 			fmt.Print("\nPress <Enter> to read next tag (or 'x' + <Enter> to exit): ")
@@ -87,11 +118,11 @@ func nfcRunCommands(command string, nfcCardInstance *nfc.NfcCard) error {
 			input = strings.TrimSpace(strings.ToLower(input))
 
 			if input == "x" {
-				log.Infof("Loop ended. Total tags read: %d", tagCount)
+				fmt.Printf("Loop ended. Total tags read: %d\n", tagCount)
 				break
 			}
 
-			log.Info("Reading tag...")
+			fmt.Println("Reading tag...")
 			info, err := nfcCardInstance.ReadLoraInfo()
 			if err != nil {
 				log.Errorf("Failed to read LoRa info: %v\n", err)
@@ -99,11 +130,11 @@ func nfcRunCommands(command string, nfcCardInstance *nfc.NfcCard) error {
 			}
 
 			// Print info to console
-			log.Info("Tag Read Successfully:")
-			log.Infof("DevEUI: %s", info.DevEUI)
-			log.Infof("JoinEUI: %s", info.JoinEUI)
-			log.Infof("JoinKey: %s", info.JoinKey)
-			log.Infof("CRC Status: %s", info.CRCStatus)
+			fmt.Println("Tag Read Successfully: ")
+			fmt.Printf("\tDevEUI: %s\n", info.DevEUI)
+			fmt.Printf("\tJoinEUI: %s\n", info.JoinEUI)
+			fmt.Printf("\tJoinKey: %s\n", info.JoinKey)
+			fmt.Printf("\tCRC Status: %s\n", info.CRCStatus)
 
 			// Write to CSV
 			err = writeLoraInfoToCSV(filename, info, isNewFile)
@@ -114,7 +145,7 @@ func nfcRunCommands(command string, nfcCardInstance *nfc.NfcCard) error {
 
 			tagCount++
 			isNewFile = false
-			log.Infof("Tag information saved to %s (Total tags: %d)", filename, tagCount)
+			fmt.Printf("Tag information saved to %s (Total tags: %d)\n", filename, tagCount)
 		}
 
 	case "erase":
@@ -128,7 +159,7 @@ func nfcRunCommands(command string, nfcCardInstance *nfc.NfcCard) error {
 			log.Errorf("Failed to erase tag: %v\n", err)
 			break
 		}
-		log.Info("Tag erased successfully")
+		fmt.Println("Tag erased successfully")
 
 		// Validate the erasure
 		err = nfcCardInstance.ValidateCRC()
@@ -136,23 +167,26 @@ func nfcRunCommands(command string, nfcCardInstance *nfc.NfcCard) error {
 			log.Errorf("Post-erase CRC validation failed: %v\n", err)
 			break
 		}
-		log.Info("Post-erase CRC validation successful")
+		fmt.Println("Post-erase CRC validation successful")
 
 	case "SerialNumberTest":
 		SerialNumberTest()
+
 	case "validateCrc":
 		err = nfcCardInstance.ValidateCRC()
 		if err != nil {
 			log.Errorf("Failed to validate CRC: %v\n", err)
 			break
 		}
+
 	case "readblelocal":
 		name, err := nfcCardInstance.ReadBLELocalName()
 		if err != nil {
 			log.Errorf("Failed to read BLE local name: %v\n", err)
 			break
 		}
-		log.Infof("BLE Local Name: %s\n", name)
+		fmt.Printf("BLE Local Name: %s\n", name)
+
 	case "writeblelocal":
 		if params == "" {
 			log.Errorf("Missing params (local name)\n")
@@ -163,14 +197,8 @@ func nfcRunCommands(command string, nfcCardInstance *nfc.NfcCard) error {
 			log.Errorf("Failed to write BLE local name: %v\n", err)
 			break
 		}
-		log.Info("BLE local name written successfully")
-	case "readlorajoineui":
-		joinEui, err := nfcCardInstance.ReadLoraJoinEui()
-		if err != nil {
-			log.Errorf("Failed to read LoRa JoinEUI: %v\n", err)
-			break
-		}
-		log.Infof("LoRa JoinEUI: %s\n", strings.ToUpper(joinEui))
+		fmt.Println("BLE local name written successfully")
+
 	case "writelorajoineui":
 		if params == "" {
 			log.Errorf("Missing params (JoinEUI)\n")
@@ -181,17 +209,11 @@ func nfcRunCommands(command string, nfcCardInstance *nfc.NfcCard) error {
 			log.Errorf("Failed to write LoRa JoinEUI: %v\n", err)
 			break
 		}
-		log.Info("LoRa JoinEUI written successfully")
-	case "readlorajoinkey":
-		joinKey, err := nfcCardInstance.ReadLoraJoinKey()
-		if err != nil {
-			log.Errorf("Failed to read LoRa Join Key: %v\n", err)
-			break
-		}
-		log.Infof("LoRa Join Key: %s\n", strings.ToUpper(joinKey))
+		fmt.Println("LoRa JoinEUI written successfully")
+
 	case "writelorajoinkey":
 		if params == "" {
-			log.Errorf("Missing params (Join Key)\n")
+			log.Errorf("Missing params (JoinKey)\n")
 			break
 		}
 		joinKey, err := nfcCardInstance.ReadLoraJoinKey()
@@ -199,7 +221,7 @@ func nfcRunCommands(command string, nfcCardInstance *nfc.NfcCard) error {
 			log.Errorf("Failed to read LoRa Join Key: %v\n", err)
 			break
 		}
-		log.Infof("Previous LoRa Join Key: %s\n", strings.ToUpper(joinKey))
+		fmt.Printf("Previous LoRa Join Key: %s\n", strings.ToUpper(joinKey))
 
 		err = nfcCardInstance.WriteLoraJoinKey(params)
 		if err != nil {
@@ -212,15 +234,8 @@ func nfcRunCommands(command string, nfcCardInstance *nfc.NfcCard) error {
 			log.Errorf("Failed to read LoRa Join Key: %v\n", err)
 			break
 		}
-		log.Infof("Current LoRa Join Key: %s\n", strings.ToUpper(joinKey))
-		log.Info("LoRa Join Key written successfully")
-	case "readloradeveui":
-		devEui, err := nfcCardInstance.ReadLoraDevEui()
-		if err != nil {
-			log.Errorf("Failed to read LoRa DevEUI: %v\n", err)
-			break
-		}
-		log.Infof("LoRa DevEUI: %s (%s)\n", strings.ToUpper(devEui), strings.ToUpper(strings.ReplaceAll(devEui, ":", "")))
+		fmt.Printf("Current LoRa Join Key: %s\n", strings.ToUpper(joinKey))
+		fmt.Println("LoRa Join Key written successfully")
 
 	case "writeloradeveui":
 		if params == "" {
@@ -232,17 +247,33 @@ func nfcRunCommands(command string, nfcCardInstance *nfc.NfcCard) error {
 			log.Errorf("Failed to write LoRa DevEUI: %v\n", err)
 			break
 		}
-		log.Info("LoRa DevEUI written successfully")
+		fmt.Println("LoRa DevEUI written successfully")
 	case "readlora":
-		log.Info("Reading all LoRa-related information...")
+		fmt.Println("Reading all Information:")
 
+		mac, err := nfcCardInstance.ReadBleMac()
+		if err != nil {
+			log.Errorf("Failed to read BLE MAC: %v\n", err)
+			break
+		}
+		macUint, err := strconv.ParseUint(strings.ReplaceAll(mac, ":", ""), 16, 64)
+		if err != nil {
+			log.Errorf("Failed to parse BLE MAC: %v\n", err)
+			break
+		}
+		fmt.Printf("\tBLE MAC: %s (Decimal: %d)\n", strings.ToUpper(mac), macUint)
 		// Read DevEUI
 		devEui, err := nfcCardInstance.ReadLoraDevEui()
 		if err != nil {
 			log.Errorf("Failed to read LoRa DevEUI: %v\n", err)
 			break
 		}
-		log.Infof("LoRa DevEUI: %s (%s)\n", strings.ToUpper(devEui), strings.ToUpper(strings.ReplaceAll(devEui, ":", "")))
+		devEuiUint, err := strconv.ParseUint(strings.ReplaceAll(devEui, ":", ""), 16, 64)
+		if err != nil {
+			log.Errorf("Failed to parse DevEUI: %v\n", err)
+			break
+		}
+		fmt.Printf("\tLoRa DevEUI->  (HEX: %s) (Cleaned: %s) (Decimal: %d)\n", strings.ToUpper(devEui), strings.ToUpper(strings.ReplaceAll(devEui, ":", "")), devEuiUint)
 
 		// Read Join EUI
 		joinEui, err := nfcCardInstance.ReadLoraJoinEui()
@@ -250,7 +281,12 @@ func nfcRunCommands(command string, nfcCardInstance *nfc.NfcCard) error {
 			log.Errorf("Failed to read LoRa JoinEUI: %v\n", err)
 			break
 		}
-		log.Infof("LoRa JoinEUI: %s\n", strings.ToUpper(joinEui))
+		joinEuiUint, err := strconv.ParseUint(strings.ReplaceAll(joinEui, ":", ""), 16, 64)
+		if err != nil {
+			log.Errorf("Failed to parse JoinEUI: %v\n", err)
+			break
+		}
+		fmt.Printf("\tLoRa JoinEUI-> (HEX: %s) (Decimal: %d)\n", strings.ToUpper(joinEui), joinEuiUint)
 
 		// Read Join Key
 		joinKey, err := nfcCardInstance.ReadLoraJoinKey()
@@ -258,7 +294,14 @@ func nfcRunCommands(command string, nfcCardInstance *nfc.NfcCard) error {
 			log.Errorf("Failed to read LoRa Join Key: %v\n", err)
 			break
 		}
-		log.Infof("LoRa Join Key: %s\n", strings.ToUpper(joinKey))
+		bigNum := new(big.Int)
+		joinKeyInt, success := bigNum.SetString(joinKey, 16)
+		if !success {
+			log.Error("Invalid number string")
+			break
+		}
+		joinKeyBase64 := base64.StdEncoding.EncodeToString([]byte(joinKey))
+		fmt.Printf("\tLoRa JoinKe->  (Hex: %s) (Decimal: %d) (Hex Encoded to Base64: %s)\n", strings.ToUpper(joinKey), joinKeyInt, joinKeyBase64)
 
 		// Print validation results
 		if (strings.Compare(joinEui, "0000000000000000") == 0) ||
@@ -271,7 +314,14 @@ func nfcRunCommands(command string, nfcCardInstance *nfc.NfcCard) error {
 			log.Warn("Join Key has default value - needs to be programmed")
 		}
 
-		log.Info("Completed reading LoRa information")
+		settings, err := nfcCardInstance.ReadDittoSettings()
+		if err != nil {
+			log.Errorf("Failed to read settings: %v\n", err)
+			break
+		}
+		nfc.PrintMappedDittoSettings(settings)
+
+		fmt.Println("\nCompleted reading LoRa information")
 	case "sleep":
 		if params == "" {
 			log.Errorf("Missing params\n")
@@ -302,7 +352,7 @@ func nfcRunCommands(command string, nfcCardInstance *nfc.NfcCard) error {
 			log.Errorf("Failed to write loraDwnTrgL: %v\n", err)
 			break
 		}
-		log.Info("loraDwnTrgL written successfully")
+		fmt.Println("loraDwnTrgL written successfully")
 
 	case "uplinkEnable":
 		if params == "" {
@@ -321,7 +371,7 @@ func nfcRunCommands(command string, nfcCardInstance *nfc.NfcCard) error {
 			log.Errorf("Failed to write tag post bit: %v\n", err)
 			break
 		}
-		log.Info("Tag post bit written successfully")
+		fmt.Println("Tag uplink written successfully")
 
 	case "tagpostbit":
 		if params == "" {
@@ -339,7 +389,7 @@ func nfcRunCommands(command string, nfcCardInstance *nfc.NfcCard) error {
 			log.Errorf("Failed to write tag post bit: %v\n", err)
 			break
 		}
-		log.Info("Tag post bit written successfully")
+		fmt.Println("Tag post bit written successfully")
 
 	case "readmacs":
 		loraMac, err := nfcCardInstance.ReadLoraDevEui()
@@ -401,7 +451,7 @@ func SerialNumberTest() {
 	defer ctx.Release()
 	readers, err := pcsc.ListReaders(ctx)
 	for i, el := range readers {
-		log.Infof("reader %v: %s\n", i, el)
+		fmt.Printf("\treader %v: %s\n", i, el)
 	}
 	samReaders := make([]pcsc.Reader, 0)
 	for _, el := range readers {
@@ -450,11 +500,10 @@ func SerialNumberTest() {
 }
 
 func printVersion() {
-	fmt.Printf("######## ######### ######## ######### ######## ########\n")
+	fmt.Printf("Version: \n")
 	fmt.Printf("\tHID NFC Reader %s\n", VERSION)
 	fmt.Printf("\tGit commit: %s\n", GITCOMMIT)
 	fmt.Printf("\tBuilt at: %s\n", BUILDTIME)
-	fmt.Printf("######## ######### ######## ######### ######## ########\n")
 }
 
 func main() {
@@ -501,7 +550,7 @@ func main() {
 	// Initialize PCSC
 	ctx, err := pcsc.NewContext()
 	if err != nil {
-		log.Infof("Failed to create PCSC context: %v\n", err)
+		fmt.Printf("Failed to create PCSC context: %v\n", err)
 		return
 	}
 	defer ctx.Release()
@@ -512,7 +561,6 @@ func main() {
 		fmt.Printf("Failed to list readers: %v\n", err)
 		return
 	}
-	log.Infof("Found %d readers\n", len(rdrlst))
 
 	if len(rdrlst) == 0 {
 		fmt.Println("No readers found")
@@ -528,7 +576,7 @@ func main() {
 
 	commands := strings.Split(command, ",")
 	for _, cmd := range commands {
-		log.Infof("############## Running command: [%s] ############## ", cmd)
+		fmt.Printf("\nRunning command: [%s]\n\n", cmd)
 		err := nfcRunCommands(cmd, nfcCardReader)
 		if err != nil {
 			return
@@ -539,7 +587,7 @@ func main() {
 		log.Errorf("Failed to disconnect card: %v\n", err)
 		return
 	}
-	log.Info("SUCCESS")
+	fmt.Println("\nSUCCESS")
 }
 
 func formatKey(key string) string {
